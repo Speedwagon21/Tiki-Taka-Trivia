@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tiki-Taka Trivia</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <h1>Tiki-Taka <span>Trivia</span></h1>
+  <button class="btn" id="walletBtn">Connect Phantom Wallet</button>
+</header>
+
+<main>
+  <!-- Screen 1: Lobby -->
+  <section class="screen active panel" id="lobby">
+    <h2>Create a match</h2>
+    <p class="sub">Stake against a rival. Three questions, fastest brain takes the pot.</p>
+    <div class="row">
+      <input type="number" id="stake" min="0" step="0.01" placeholder="0.00" aria-label="Stake amount">
+      <div class="seg" role="group" aria-label="Currency">
+        <button class="on" data-cur="SOL">SOL</button>
+        <button data-cur="USDC">USDC</button>
+      </div>
+    </div>
+    <div class="escrow">
+      Your stake goes into a mock escrow contract. The winner receives <b>both stakes</b>;
+      a tie refunds you in full.<br>
+      Contract: <b>TikiEscrow…7xQ9</b>
+    </div>
+    <label class="consent">
+      <input type="checkbox" id="agree">
+      <span>I am 18 or older (or the legal age where I live), staking is lawful where I am, and I accept the
+      <a href="#terms" data-open-terms>terms and conditions</a>.</span>
+    </label>
+    <button class="btn solid" id="lockBtn" style="width:100%;padding:14px">Lock stake and enter match</button>
+    <p class="msg" id="lobbyMsg"></p>
+  </section>
+
+  <!-- Screen 2: Game arena -->
+  <section class="screen panel" id="arena">
+    <div class="hud">
+      <div class="counter" id="counter">Question 1 of 3</div>
+      <div class="pot"><small>Total pot</small><strong id="pot">0</strong><small id="potCur">SOL</small></div>
+      <div class="score" id="liveScore">You 0<br>Rival 0</div>
+    </div>
+    <div class="timer"><i id="timerBar"></i></div>
+    <div class="tier-row">
+      <span class="badge easy" id="badge"><span class="pips" id="pips"><i></i><i></i><i></i></span><span id="badgeText">Easy</span></span>
+    </div>
+    <div class="q" id="question"></div>
+    <div class="answers" id="answers"></div>
+  </section>
+
+  <!-- Screen 3: Results -->
+  <section class="screen panel" id="results">
+    <p class="sub" id="resSub" style="margin-bottom:0"></p>
+    <div class="final" id="resTitle"></div>
+    <p id="resText" class="sub"></p>
+    <div class="ledger" id="ledger"></div>
+    <button class="btn solid" id="againBtn">Play another match</button>
+  </section>
+
+  <!-- Screen 4: Terms and conditions -->
+  <section class="screen panel terms" id="terms">
+    <button class="btn back" id="termsBack">Back</button>
+    <h2>Terms and conditions</h2>
+    <p class="sub" style="margin-bottom:0">Last updated 6 October 2026</p>
+    <div class="draft">Prototype draft. This is placeholder text with bracketed blanks, not legal advice. Real-money gaming is licensed and restricted in many places, so have a qualified lawyer review and complete it before launch.</div>
+
+    <h3>1. About these terms</h3>
+    <p>Tiki-Taka Trivia (the "Service") is operated by [Company name and registration number] ("we", "us"). By connecting a wallet or locking a stake you agree to these terms, our privacy notice and any rules shown on the match screens. If you do not agree, do not use the Service.</p>
+
+    <h3>2. Eligibility</h3>
+    <ul>
+      <li>You must be at least 18, or the legal gambling age where you live if that is higher.</li>
+      <li>You must have legal capacity to enter a binding contract and use only a wallet you control.</li>
+      <li>You must not use the Service from a restricted territory: [list of excluded countries and regions]. Using a VPN to get around this is prohibited.</li>
+      <li>One person may hold one account. We may ask you to verify your age, identity and location at any time.</li>
+    </ul>
+
+    <h3>3. Your wallet</h3>
+    <p>You connect a third-party wallet such as Phantom. You are solely responsible for your wallet, keys and recovery phrase. We never ask for them and cannot recover lost funds or reverse a transaction you signed.</p>
+
+    <h3>4. How a match works</h3>
+    <p>Each match is a 1v1 trivia contest of three questions, one each at Easy, Medium and Hard difficulty, with a 10-second limit per question. The higher score wins. A question left unanswered when time runs out scores zero. Outcomes depend on skill and knowledge, but you may lose your stake, and winning is never guaranteed.</p>
+
+    <h3>5. Stakes, escrow and payouts</h3>
+    <ul>
+      <li>When you lock a stake, it is transferred to an escrow smart contract and cannot be withdrawn until the match settles.</li>
+      <li>The pot is both players' stakes. The winner receives the pot, less any platform fee of [fee %] disclosed before you lock your stake.</li>
+      <li>If scores are level, each player's stake is refunded in full.</li>
+      <li>Blockchain transactions are final. Network fees are paid by you, and settlement times depend on the network.</li>
+      <li>Winnings may be withheld while we complete verification or investigate a suspected breach of these terms.</li>
+    </ul>
+
+    <h3>6. Fair play</h3>
+    <p>You must not use bots, scripts, search engines, other people or any outside help during a match. You must not collude with an opponent, create multiple accounts, exploit bugs, or manipulate the outcome in any way. If we find a breach, we may void the match, withhold winnings, close your account and report the matter to the authorities where required.</p>
+
+    <h3>7. Voided matches and disputes</h3>
+    <p>If a match cannot finish because of a technical fault, a disconnect on our side, an error in a question or answer, or a suspected breach of the rules, we may void it, and escrowed stakes will be returned to both players. To dispute a result, contact us within [14] days with your wallet address and the transaction reference. Our decision after review is final, subject to your legal rights.</p>
+
+    <h3>8. Responsible play</h3>
+    <p>Only stake money you can afford to lose. Staking is not a way to make money or solve financial problems. Set yourself a limit before you play, take regular breaks, and never chase losses. You can ask us to close your account or exclude you for a period at [contact email]. If gambling is causing you harm, contact a free local problem-gambling helpline or support service.</p>
+
+    <h3>9. Verification and financial crime</h3>
+    <p>We may be legally required to verify who you are, where your funds come from, and to screen wallets against sanctions lists. We may refuse or suspend service, freeze payouts and share information with regulators and law enforcement to meet these duties.</p>
+
+    <h3>10. Risks</h3>
+    <p>Crypto-assets such as SOL can change sharply in value. USDC and other stablecoins can lose their peg. Smart contracts and blockchains can contain bugs or be attacked, and wallet software can fail. You accept these risks when you use the Service.</p>
+
+    <h3>11. Our liability</h3>
+    <p>The Service is provided "as is" and "as available." To the extent the law allows, we are not liable for lost stakes, lost winnings, network failures, wallet or third-party faults, or indirect losses. Nothing in these terms limits liability that cannot be excluded by law.</p>
+
+    <h3>12. Privacy</h3>
+    <p>We process your wallet address, match history, device and location data to run the Service, prevent fraud and meet legal duties, as described in our privacy notice [link]. Blockchain transactions are public and cannot be deleted.</p>
+
+    <h3>13. Changes to these terms</h3>
+    <p>We may update these terms and will show the new date above. If you keep using the Service after a change, you accept the updated terms. Changes never affect a match that is already in progress.</p>
+
+    <h3>14. Governing law and contact</h3>
+    <p>These terms are governed by the laws of [jurisdiction], and its courts have jurisdiction, unless your local consumer law says otherwise. Questions and complaints: [contact email], [licence number and regulator, if licensed].</p>
+  </section>
+</main>
+
+<footer class="site-footer" id="siteFooter">
+  <a href="#terms" data-open-terms>Terms and conditions</a>
+  <a href="#terms" data-open-terms>Responsible play</a>
+  <p>18+ only. Staking carries financial risk, so only stake what you can afford to lose.</p>
+</footer>
+
+<script src="script.js"></script>
+</body>
+</html>
