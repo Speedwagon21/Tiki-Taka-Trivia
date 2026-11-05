@@ -45,7 +45,7 @@ test("scoring rewards correct and fast answers", () => {
   assert.equal(scoreAnswer(true, 12000, 10000), 500);
 });
 
-const P = (id, score) => ({ id, name: id, score, wallet: null, isBot: false, left: false });
+const P = (id, score) => ({ id, name: id, score, wallet: null, left: false });
 
 test("settle: the top score takes the whole pot", () => {
   const r = settle([P("a", 1800), P("b", 900), P("c", 0)], 2);

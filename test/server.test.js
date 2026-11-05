@@ -189,22 +189,104 @@ test("a dropped player resumes their seat, and the host role moves if the host l
   back.close(); host.close(); server.close();
 });
 
-test("practice starts straight away against a bot that answers on its own", async () => {
-  const { server, port } = await startServer({ ...FAST, questionMs: 600 });
-  const solo = await client(port, "practice-1");
-  solo.send({ type: "practice", name: "Solo" });
-  const room = await solo.next("room");
-  assert.equal(room.practice, true);
-  assert.equal(room.players.length, 2);
-  const bot = room.players.find(p => p.isBot);
-  await solo.next("question");
-  await solo.next("answered", m => m.id === bot.id, 2000);
-  const results = await solo.next("results", () => true, 6000);
-  assert.equal(results.practice, true);
-  assert.equal(results.tx, null);
-  // Practice rooms can't be joined by code
-  const other = await client(port, "practice-2");
-  other.send({ type: "lookup", code: room.code });
-  assert.match((await other.next("error")).message, /No room/);
-  solo.close(); other.close(); server.close();
+test("head to head challenge: a friend joins by code and the match starts by itself", async () => {
+  const { server, port } = await startServer();
+  const host = await client(port, "h2h-host-01");
+  const friend = await client(port, "h2h-friend-1");
+  const third = await client(port, "h2h-third-01");
+
+  host.send({ type: "create", mode: "h2h", name: "Ana", wallet: WALLET_A, stake: 2, currency: "SOL" });
+  const room = await host.next("room");
+  assert.equal(room.mode, "h2h");
+  assert.equal(room.maxPlayers, 2);
+
+  host.send({ type: "start" });
+  assert.match((await host.next("error")).message, /start on their own/);
+
+  friend.send({ type: "lookup", code: room.code });
+  const peek = await friend.next("lookup");
+  assert.equal(peek.room.mode, "h2h");
+
+  friend.send({ type: "join", code: room.code, name: "Ben", wallet: WALLET_B });
+  await host.next("countdown");
+  await friend.next("countdown");
+  const first = friend.inbox.find(m => m.type === "room");
+  assert.equal(first.phase, "countdown", "the friend goes straight into the match, no waiting room");
+
+  third.send({ type: "join", code: room.code, name: "Cy", wallet: WALLET_B });
+  assert.match((await third.next("error")).message, /already under way|two players/);
+
+  [host, friend, third].forEach(c => c.close());
+  server.close();
+});
+
+test("head to head rematch needs both players to agree", async () => {
+  const { server, port } = await startServer();
+  const a = await client(port, "rematch-a-01");
+  const b = await client(port, "rematch-b-01");
+  a.send({ type: "create", mode: "h2h", name: "A", wallet: WALLET_A, stake: 1, currency: "SOL" });
+  const { code } = await a.next("room");
+  b.send({ type: "join", code, name: "B", wallet: WALLET_B });
+  await a.next("results", () => true, 5000);          // nobody answers; clock runs out
+  await b.next("results", () => true, 5000);
+
+  a.send({ type: "rematch" });
+  const pending = await b.next("room", m => m.rematch.length === 1);
+  assert.equal(pending.phase, "results", "one vote is not enough");
+  b.send({ type: "rematch" });
+  await a.next("countdown", m => true);
+  await b.next("countdown");
+
+  a.close(); b.close(); server.close();
+});
+
+test("matchmaking pairs players at the same stake and currency only", async () => {
+  const { server, port } = await startServer();
+  const p1 = await client(port, "mm-player-1");
+  const p2 = await client(port, "mm-player-2");
+  const p3 = await client(port, "mm-player-3");
+
+  p1.send({ type: "findMatch", name: "One", wallet: WALLET_A, stake: 1, currency: "SOL" });
+  assert.equal((await p1.next("searching")).stake, 1);
+  p2.send({ type: "findMatch", name: "Two", wallet: WALLET_B, stake: 1, currency: "USDC" });
+  await p2.next("searching");                          // different currency: no match yet
+
+  p3.send({ type: "findMatch", name: "Three", wallet: WALLET_B, stake: 1, currency: "SOL" });
+  const r1 = await p1.next("room");
+  const r3 = await p3.next("room");
+  assert.equal(r1.code, r3.code);
+  assert.equal(r1.mode, "h2h");
+  assert.equal(r1.matched, true);
+  assert.equal(r1.phase, "countdown");
+  await p1.next("countdown");
+
+  // Matched rooms are private: no joining by code
+  p2.send({ type: "lookup", code: r1.code });
+  assert.match((await p2.next("error")).message, /No room/);
+
+  // Cancelling leaves the queue, so a later player at that stake waits instead of pairing
+  p2.send({ type: "cancelSearch" });
+  await p2.next("searchCancelled");
+  const p4 = await client(port, "mm-player-4");
+  p4.send({ type: "findMatch", name: "Four", wallet: WALLET_A, stake: 1, currency: "USDC" });
+  await p4.next("searching");
+
+  // A dropped connection also leaves the queue
+  p4.close();
+  await new Promise(r => setTimeout(r, 50));
+  p2.send({ type: "findMatch", name: "Two", wallet: WALLET_B, stake: 1, currency: "USDC" });
+  await p2.next("searching");
+
+  [p1, p2, p3].forEach(c => c.close());
+  server.close();
+});
+
+test("matchmaking needs a wallet and a valid stake", async () => {
+  const { server, port } = await startServer();
+  const c = await client(port, "mm-invalid-1");
+  c.send({ type: "findMatch", name: "X", stake: 1, currency: "SOL" });
+  assert.match((await c.next("error")).message, /wallet/);
+  c.send({ type: "findMatch", name: "X", wallet: WALLET_A, stake: 0, currency: "SOL" });
+  assert.match((await c.next("error")).message, /stake/);
+  c.close(); server.close();
 });

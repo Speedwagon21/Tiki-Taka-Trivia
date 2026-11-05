@@ -36,6 +36,8 @@ const app = {
   currency: "SOL",
   screen: "home",
   beforeTerms: "home",
+  mode: "group",        // home screen tab: "group" | "h2h"
+  search: null,         // { stake, currency } while looking for a head-to-head opponent
   pendingCode: null,    // code from an invite link, looked up once connected
   leaving: false        // set after "Leave" so stray updates don't pull us back in
 };
@@ -68,7 +70,7 @@ function screenForRoom() {
   if (!app.room) return null;
   if (["countdown", "question", "reveal"].includes(app.room.phase)) return "arena";
   if (app.room.phase === "results" && app.results) return "results";
-  return app.room.practice ? null : "room";
+  return "room";
 }
 
 function setMsg(id, text, ok = false) {
@@ -188,6 +190,8 @@ function handle(m) {
         show("home");
         setMsg("homeMsg", "You lost your place in the room. Create or join another one.");
       }
+      // The matchmaking queue forgets us when the connection drops, so get back in line
+      if (app.search && !net.queue.some(q => q.type === "findMatch")) send({ type: "findMatch", ...app.search, ...identity() });
       net.queue.splice(0).forEach(send);
       if (app.pendingCode) { lookupCode(app.pendingCode); app.pendingCode = null; }
       return;
@@ -198,10 +202,13 @@ function handle(m) {
     case "answered": return onAnswered(m);
     case "reveal": return onReveal(m);
     case "results": return onResults(m);
+    case "searching": return onSearching(m);
+    case "searchCancelled": return;
 
     case "lookup":
       app.lookup = m.room;
       renderJoin();
+      $("joinPreview").scrollIntoView({ block: "center", behavior: prefersReducedMotion ? "auto" : "smooth" });
       return;
 
     case "closed":
@@ -215,9 +222,14 @@ function handle(m) {
 
     case "error": {
       busy(false);
-      if (m.about === "lookup") { app.lookup = null; renderJoin(); }
-      const where = { home: "homeMsg", room: "roomMsg" }[app.screen] || "homeMsg";
-      if (app.screen === "home" || app.screen === "room") setMsg(where, m.message);
+      if (m.about === "lookup" || m.about === "join") {
+        if (m.about === "lookup") app.lookup = null;
+        renderJoin();
+        return setMsg("joinMsg", m.message);
+      }
+      if (app.screen === "search") { stopSearch(); show("home"); }
+      if (app.screen === "home") setMsg("homeMsg", m.message);
+      else if (app.screen === "room") setMsg("roomMsg", m.message);
       else toast(m.message);
       return;
     }
@@ -231,24 +243,41 @@ function resetRoom() {
 }
 
 /* ======================================================================
-   Home screen: name, tabs, create / join / practice
+   Home screen: name, mode tabs (Group / Head to Head), join with a code
    ====================================================================== */
 const nameInput = $("nameInput");
 nameInput.value = store.get("tt-name") || "";
 nameInput.addEventListener("input", () => store.set("tt-name", nameInput.value.trim()));
 const playerName = () => nameInput.value.trim() || "Player " + clientKey.slice(0, 3).toUpperCase();
 
-/* Tabs with arrow-key support */
-const tabs = ["create", "join", "practice"];
+const MODES = {
+  group: {
+    blurb: "Create a room and share the link with up to 7 friends. You start the match when everyone's in.",
+    escrow: "Every player locks the same stake. The top score takes the <b>whole pot</b>, a shared top score splits it, and if everyone is level, everyone gets their stake back."
+  },
+  h2h: {
+    blurb: "One on one. Get matched with a random player at the same stake, or send a challenge link to a friend. The match starts as soon as you're both in.",
+    escrow: "You and your opponent lock the same stake. The winner takes <b>both stakes</b>; a tie refunds you in full."
+  }
+};
+const DEMO_NOTE = '<span class="demo-note">Prototype: the escrow is simulated on Solana devnet, so no real funds move.</span>';
+
+/* Tabs with arrow-key support. The choice is remembered for next time. */
+const tabs = ["group", "h2h"];
 function selectTab(name, focus = false) {
+  app.mode = name;
+  store.set("tt-mode", name);
   tabs.forEach(t => {
     const on = t === name;
     const tab = $("tab-" + t);
     tab.setAttribute("aria-selected", String(on));
     tab.tabIndex = on ? 0 : -1;
-    $("pane-" + t).hidden = !on;
     if (on && focus) tab.focus();
   });
+  $("modePane").setAttribute("aria-labelledby", "tab-" + name);
+  $("modeBlurb").textContent = MODES[name].blurb;
+  $("escrowNote").innerHTML = MODES[name].escrow + "<br>" + DEMO_NOTE;   // static text only
+  document.querySelectorAll(".mode-actions").forEach(box => { box.hidden = box.dataset.mode !== name; });
   setMsg("homeMsg", "");
 }
 tabs.forEach((t, i) => {
@@ -270,7 +299,7 @@ document.querySelectorAll(".seg button").forEach(b => b.onclick = () => {
 let isBusy = false;
 function busy(on) {
   isBusy = on;
-  ["createBtn", "joinBtn", "practiceBtn", "startBtn", "againBtn"].forEach(id => { $(id).classList.toggle("loading", on); });
+  ["createBtn", "findBtn", "challengeBtn", "joinConfirmBtn", "startBtn", "againBtn"].forEach(id => { $(id).classList.toggle("loading", on); });
   if (!on) renderJoin();
 }
 
@@ -282,73 +311,114 @@ function rememberQuestion(id) {
 }
 const identity = () => (app.leaving = false, { name: playerName(), wallet: app.wallet ? app.wallet.address : null, recent: recent() });
 
-$("createBtn").onclick = async () => {
-  if (isBusy) return;
+/* Shared checks before any stake is locked. Returns the stake, or null after showing why not. */
+async function readyToStake(msgId, consentId) {
   const stake = parseFloat($("stake").value);
-  if (!(stake >= 0.01 && stake <= 1000)) return setMsg("homeMsg", "Enter a stake between 0.01 and 1000.");
-  if (!$("agreeCreate").checked) return setMsg("homeMsg", "Confirm you are 18+ and accept the terms to continue.");
-  if (!app.wallet && !(await connectWallet())) return setMsg("homeMsg", "Connect a wallet to create a staked room.");
+  if (consentId === "agreeCreate" && !(stake >= 0.01 && stake <= 1000)) { setMsg(msgId, "Enter a stake between 0.01 and 1000."); return null; }
+  if (!$(consentId).checked) { setMsg(msgId, "Confirm you are 18+ and accept the terms to continue."); return null; }
+  if (!app.wallet && !(await connectWallet())) { setMsg(msgId, "Connect a wallet to play for a stake."); return null; }
+  return consentId === "agreeCreate" ? stake : true;
+}
+
+async function createRoom(mode) {
+  if (isBusy) return;
+  const stake = await readyToStake("homeMsg", "agreeCreate");
+  if (stake == null) return;
   busy(true);
   setMsg("homeMsg", "Signing and locking your stake in escrow…", true);
   await sleep(700);   // mock signing delay, so it feels like a transaction
-  send({ type: "create", stake, currency: app.currency, ...identity() });
-};
+  send({ type: "create", mode, stake, currency: app.currency, ...identity() });
+}
+$("createBtn").onclick = () => createRoom("group");
+$("challengeBtn").onclick = () => createRoom("h2h");
 
-$("practiceBtn").onclick = () => {
+/* Head to head with a random opponent */
+$("findBtn").onclick = async () => {
   if (isBusy) return;
-  busy(true);
+  const stake = await readyToStake("homeMsg", "agreeCreate");
+  if (stake == null) return;
   setMsg("homeMsg", "");
-  send({ type: "practice", ...identity() });
+  app.search = { stake, currency: app.currency };
+  send({ type: "findMatch", ...app.search, ...identity() });
 };
 
-/* Join: look the code up first so the player can see the stake before locking it */
+const search = { timer: 0, since: 0 };
+function onSearching(m) {
+  app.search = { stake: m.stake, currency: m.currency };
+  $("searchSub").textContent = `Head to head for ${fmt(m.stake)} ${m.currency} each. Winner takes ${fmt(m.stake * 2)} ${m.currency}.`;
+  if (app.screen !== "search") {
+    search.since = Date.now();
+    clearInterval(search.timer);
+    const tick = () => {
+      const s = Math.floor((Date.now() - search.since) / 1000);
+      $("searchTime").textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    };
+    tick();
+    search.timer = setInterval(tick, 1000);
+    show("search");
+  }
+}
+function stopSearch() {
+  app.search = null;
+  clearInterval(search.timer);
+}
+$("cancelSearchBtn").onclick = () => {
+  stopSearch();
+  send({ type: "cancelSearch" });
+  show("home");
+};
+
+/* Join: look the code up first so the player can see the mode and stake before locking it */
 const codeInput = $("codeInput");
 const CODE_CHARS = /[^ABCDEFGHJKLMNPQRSTUVWXYZ23456789]/g;
 codeInput.addEventListener("input", () => {
   const clean = codeInput.value.toUpperCase().replace(CODE_CHARS, "").slice(0, 5);
   codeInput.value = clean;
   app.lookup = null;
-  setMsg("homeMsg", "");
+  setMsg("joinMsg", "");
   if (clean.length === 5) lookupCode(clean);
   renderJoin();
 });
+codeInput.addEventListener("keydown", e => { if (e.key === "Enter") $("joinBtn").click(); });
 function lookupCode(code) {
   codeInput.value = code;
   send({ type: "lookup", code });
 }
 $("agreeJoin").onchange = renderJoin;
+$("joinBtn").onclick = () => { if (codeInput.value.length === 5) lookupCode(codeInput.value); };
 
 function renderJoin() {
-  const r = app.lookup, btn = $("joinBtn"), preview = $("joinPreview");
+  const r = app.lookup, btn = $("joinConfirmBtn"), preview = $("joinPreview");
+  $("joinBtn").disabled = codeInput.value.length !== 5;
   $("joinConsent").hidden = !r;
   preview.hidden = !r;
+  btn.hidden = !r;
   preview.replaceChildren();
-  if (!r) {
-    btn.textContent = "Find room";
-    btn.disabled = codeInput.value.length !== 5 || isBusy;
-    return;
-  }
+  if (!r) return;
+  const h2h = r.mode === "h2h";
   const full = r.players >= r.maxPlayers, playing = !["lobby", "results"].includes(r.phase);
   preview.append(
-    el("div", { className: "preview-code" }, r.code),
+    el("div", { className: "preview-head" },
+      el("span", { className: "preview-code" }, r.code),
+      el("span", { className: "mode-tag " + r.mode }, h2h ? "Head to Head" : "Group")),
     el("dl", {},
-      el("dt", {}, "Host"), el("dd", {}, r.host || "—"),
+      el("dt", {}, h2h ? "Challenger" : "Host"), el("dd", {}, r.host || "—"),
       el("dt", {}, "Stake"), el("dd", {}, `${fmt(r.stake)} ${r.currency} each`),
-      el("dt", {}, "Players"), el("dd", {}, `${r.players} of ${r.maxPlayers}`)),
-    ...(playing ? [el("p", { className: "warn" }, "A match is in progress. You can join once it finishes.")] : [])
+      el("dt", {}, h2h ? "Winner gets" : "Players"),
+      el("dd", {}, h2h ? `${fmt(r.stake * 2)} ${r.currency}` : `${r.players} of ${r.maxPlayers}`)),
+    ...(playing ? [el("p", { className: "warn" }, "A match is in progress. You can join once it finishes.")] : []),
+    ...(h2h && !full && !playing ? [el("p", { className: "hint flush" }, "The match starts the moment you join.")] : [])
   );
-  btn.textContent = `Lock ${fmt(r.stake)} ${r.currency} and join`;
+  btn.textContent = h2h ? `Accept challenge: lock ${fmt(r.stake)} ${r.currency}` : `Lock ${fmt(r.stake)} ${r.currency} and join`;
   btn.disabled = isBusy || full || playing;
-  if (full) btn.textContent = "Room is full";
+  if (full) btn.textContent = h2h ? "Challenge already taken" : "Room is full";
 }
 
-$("joinBtn").onclick = async () => {
-  if (isBusy) return;
-  if (!app.lookup) { if (codeInput.value.length === 5) lookupCode(codeInput.value); return; }
-  if (!$("agreeJoin").checked) return setMsg("homeMsg", "Confirm you are 18+ and accept the terms to continue.");
-  if (!app.wallet && !(await connectWallet())) return setMsg("homeMsg", "Connect a wallet to join a staked room.");
+$("joinConfirmBtn").onclick = async () => {
+  if (isBusy || !app.lookup) return;
+  if ((await readyToStake("joinMsg", "agreeJoin")) == null) return;
   busy(true);
-  setMsg("homeMsg", "Signing and locking your stake in escrow…", true);
+  setMsg("joinMsg", "Signing and locking your stake in escrow…", true);
   await sleep(700);
   send({ type: "join", code: app.lookup.code, ...identity() });
 };
@@ -361,20 +431,22 @@ function onRoom(r) {
   const prev = app.room;
   app.room = r;
   busy(false);
+  stopSearch();
   setMsg("homeMsg", "");
+  setMsg("joinMsg", "");
 
   // Sounds and announcements for people arriving and leaving
-  if (prev && prev.code === r.code && !r.practice) {
+  if (prev && prev.code === r.code) {
     const before = new Set(prev.players.map(p => p.id));
     const now = new Set(r.players.map(p => p.id));
     r.players.filter(p => !before.has(p.id)).forEach(p => { sound.join(); announce(`${p.name} joined`); });
-    prev.players.filter(p => !now.has(p.id)).forEach(p => announce(`${p.name} left`));
+    prev.players.filter(p => !now.has(p.id)).forEach(p => { announce(`${p.name} left`); if (r.phase === "results") toast(`${p.name} left the room`); });
   }
 
   renderRoom();
   renderChips();
-  // New arrivals during the results screen wait in the room for the next match
-  if (!r.practice && (r.phase === "lobby" || (r.phase === "results" && !app.results))) {
+  // Waiting rooms, and new arrivals while others are on the results screen
+  if (r.phase === "lobby" || (r.phase === "results" && !app.results)) {
     if (app.screen !== "terms") show("room");
   } else if (r.phase === "results") {
     renderResultActions();
@@ -384,11 +456,16 @@ function onRoom(r) {
 function inviteLink() { return `${location.origin}${location.pathname}?room=${app.room.code}`; }
 const me = () => app.room && app.room.players.find(p => p.id === app.room.you);
 const isHost = () => app.room && app.room.hostId === app.room.you;
+const opponent = () => app.room && app.room.players.find(p => p.id !== app.room.you);
 
 function renderRoom() {
   const r = app.room;
-  if (!r || r.practice) return;
-  $("roomTitle").textContent = isHost() ? "Your room" : "You're in";
+  if (!r) return;
+  const h2h = r.mode === "h2h";
+  $("roomTitle").textContent = h2h ? "Challenge a friend" : isHost() ? "Your group room" : "You're in";
+  $("roomSub").textContent = h2h
+    ? "Send this link or code to the person you want to play. The match starts the moment they accept."
+    : "Send this link or code to your friends so they can join.";
   if ($("roomCode").dataset.code !== r.code) {     // rebuild (and animate) only when the code changes
     $("roomCode").dataset.code = r.code;
     $("roomCode").replaceChildren(...[...r.code].map(c => el("span", {}, c)));
@@ -396,25 +473,36 @@ function renderRoom() {
   $("roomCode").setAttribute("aria-label", "Room code " + [...r.code].join(" "));
   $("roomStake").replaceChildren(
     el("div", {}, el("small", {}, "Stake each"), el("strong", {}, `${fmt(r.stake)} ${r.currency}`)),
-    el("div", {}, el("small", {}, "Pot so far"), el("strong", { className: "accent" }, `${fmt(r.pot)} ${r.currency}`))
+    h2h
+      ? el("div", {}, el("small", {}, "Winner gets"), el("strong", { className: "accent" }, `${fmt(r.stake * 2)} ${r.currency}`))
+      : el("div", {}, el("small", {}, "Pot so far"), el("strong", { className: "accent" }, `${fmt(r.pot)} ${r.currency}`))
   );
   $("playerCount").textContent = `${r.players.length}/${r.maxPlayers}`;
-  $("playerList").replaceChildren(...r.players.map(p => el("li", { className: p.connected ? "" : "away" },
+  const rows = r.players.map(p => el("li", { className: p.connected ? "" : "away" },
     el("span", { className: "avatar", ariaHidden: "true" }, (p.name[0] || "?").toUpperCase()),
     el("span", { className: "pname" }, p.name, p.id === r.you ? el("em", {}, " (you)") : null),
-    p.isHost ? el("span", { className: "tag host" }, "Host") : null,
+    p.isHost && !h2h ? el("span", { className: "tag host" }, "Host") : null,
     !p.connected ? el("span", { className: "tag" }, "Reconnecting…") : null,
     el("span", { className: "addr" }, short(p.wallet))
-  )));
+  ));
+  if (h2h && r.players.length < 2) {      // an empty seat makes the 1v1 obvious
+    rows.push(el("li", { className: "empty" },
+      el("span", { className: "avatar", ariaHidden: "true" }, "?"),
+      el("span", { className: "pname" }, "Waiting…")));
+  }
+  $("playerList").replaceChildren(...rows);
+  $("playerList").classList.toggle("versus", h2h);
 
   const enough = r.players.length >= 2;
   const host = r.players.find(p => p.isHost);
-  $("startBtn").hidden = !isHost();
+  $("startBtn").hidden = h2h || !isHost();
   $("startBtn").disabled = !enough;
   $("startBtn").textContent = r.matchNo ? "Start next match" : "Start match";
-  $("roomHint").textContent = isHost()
-    ? (enough ? "Everyone in? Start when you're ready." : "Waiting for at least one more player to join…")
-    : `Waiting for ${host ? host.name : "the host"} to start the match…`;
+  $("roomHint").textContent = h2h
+    ? "Keep this page open. You'll go straight into the match when they join."
+    : isHost()
+      ? (enough ? "Everyone in? Start when you're ready." : "Waiting for at least one more player to join…")
+      : `Waiting for ${host ? host.name : "the host"} to start the match…`;
   $("shareBtn").hidden = !navigator.share;
 }
 
@@ -428,7 +516,9 @@ $("copyCodeBtn").onclick = () => copy(app.room.code, "Room code copied");
 $("copyLinkBtn").onclick = () => copy(inviteLink(), "Invite link copied");
 $("shareBtn").onclick = () => navigator.share({
   title: "Tiki-Taka Trivia",
-  text: `Join my Tiki-Taka Trivia room. Code: ${app.room.code}`,
+  text: app.room.mode === "h2h"
+    ? `I challenge you to a Tiki-Taka Trivia head to head for ${fmt(app.room.stake)} ${app.room.currency}. Code: ${app.room.code}`
+    : `Join my Tiki-Taka Trivia room. Code: ${app.room.code}`,
   url: inviteLink()
 }).catch(() => {});
 $("startBtn").onclick = () => { if (!isBusy) { setMsg("roomMsg", ""); send({ type: "start" }); } };
@@ -496,8 +586,8 @@ function onCountdown(m) {
 
 function setPot() {
   const r = app.room;
-  $("pot").textContent = r.practice ? "Free" : fmt(r.pot);
-  $("potCur").textContent = r.practice ? "practice" : r.currency;
+  $("pot").textContent = fmt(r.pot);
+  $("potCur").textContent = r.currency;
 }
 
 function onQuestion(m) {
@@ -625,9 +715,11 @@ function onResults(m) {
   app.results = m;
   stopTimer();
   const youId = app.room ? app.room.you : null;
-  const mine = m.standings.find(s => s.id === youId) || { score: 0, rank: 0 };
+  const mine = m.standings.find(s => s.id === youId) || { score: 0, rank: 0, payout: 0 };
   const won = m.winnerIds.includes(youId);
   const cur = m.currency;
+  const h2h = m.mode === "h2h";
+  const rival = h2h ? m.standings.find(s => s.id !== youId) : null;
   const title = $("resTitle");
   title.className = "final";
 
@@ -635,43 +727,47 @@ function onResults(m) {
   if (m.outcome === "refund") {
     title.textContent = "Draw";
     title.classList.add("draw");
-    text = m.practice ? "Dead level with the bot." : `Everyone finished level, so every stake was refunded (${fmt(m.stake)} ${cur} back to you).`;
+    text = h2h
+      ? `Dead level with ${rival.name}. Both stakes were refunded.`
+      : `Everyone finished level, so every stake was refunded (${fmt(m.stake)} ${cur} back to you).`;
   } else if (won && m.outcome === "win") {
     title.textContent = "You win";
-    text = m.practice ? "You beat the bot. Ready for a real room?" : `The escrow released the ${fmt(m.pot)} ${cur} pot to your wallet.`;
+    text = h2h
+      ? `You beat ${rival.name}. The escrow released ${fmt(m.pot)} ${cur} to your wallet.`
+      : `The escrow released the ${fmt(m.pot)} ${cur} pot to your wallet.`;
   } else if (won) {
     title.textContent = "Shared win";
     title.classList.add("draw");
-    text = `You tied for the top score and split the pot: ${fmt(m.standings.find(s => s.id === youId).payout)} ${cur} to you.`;
+    text = `You tied for the top score and split the pot: ${fmt(mine.payout)} ${cur} to you.`;
   } else {
     title.textContent = "You lose";
     title.classList.add("lose");
     const top = m.standings.filter(s => m.winnerIds.includes(s.id)).map(s => s.name).join(" and ");
-    text = m.practice ? "The bot edged it this time. Run it back?" : `${top} took the ${fmt(m.pot)} ${cur} pot.`;
+    text = h2h ? `${top} beat you and took the ${fmt(m.pot)} ${cur}.` : `${top} took the ${fmt(m.pot)} ${cur} pot.`;
   }
-  $("resSub").textContent = m.standings.length > 1 ? `You finished ${ordinal(mine.rank)} of ${m.standings.length} with ${mine.score} points` : "";
+  $("resSub").textContent = h2h
+    ? `${mine.score} – ${rival.score} against ${rival.name}`
+    : `You finished ${ordinal(mine.rank)} of ${m.standings.length} with ${mine.score} points`;
   $("resText").textContent = text;
 
   $("standings").replaceChildren(...m.standings.map(s => el("li", { className: s.id === youId ? "you" : "" },
     el("span", { className: "rank" }, String(s.rank)),
-    el("span", { className: "sname" }, s.id === youId ? "You" : s.name, s.isBot ? el("em", {}, " bot") : null, s.left ? el("em", {}, " left") : null),
+    el("span", { className: "sname" }, s.id === youId ? "You" : s.name, s.left ? el("em", {}, " left") : null),
     el("span", { className: "spts" }, `${s.score} pts`),
-    m.practice ? null : el("span", { className: "net " + (s.net > 0 ? "up" : s.net < 0 ? "down" : "") },
+    el("span", { className: "net " + (s.net > 0 ? "up" : s.net < 0 ? "down" : "") },
       (s.net > 0 ? "+" : "") + fmt(s.net) + " " + cur)
   )));
 
   // Settlement record. Built with DOM nodes so player names can't inject markup.
   const ledger = $("ledger");
   ledger.replaceChildren();
-  if (!m.practice) {
-    const line = (...parts) => ledger.append(el("div", {}, ...parts));
-    const em = t => el("em", {}, t);
-    line("escrow.tx  ", m.tx);
-    m.standings.filter(s => s.payout > 0).forEach(s =>
-      line(m.outcome === "refund" ? "refund" : "release", "(to=", em(short(s.wallet) || s.name), ", amount=", em(`${fmt(s.payout)} ${cur}`), ")"));
-    line("status: ", em("confirmed"));
-    ledger.append(el("div", { className: "demo-note" }, "Simulated settlement on devnet. No real funds moved."));
-  }
+  const line = (...parts) => ledger.append(el("div", {}, ...parts));
+  const em = t => el("em", {}, t);
+  line("escrow.tx  ", m.tx);
+  m.standings.filter(s => s.payout > 0).forEach(s =>
+    line(m.outcome === "refund" ? "refund" : "release", "(to=", em(short(s.wallet) || s.name), ", amount=", em(`${fmt(s.payout)} ${cur}`), ")"));
+  line("status: ", em("confirmed"));
+  ledger.append(el("div", { className: "demo-note" }, "Simulated settlement on devnet. No real funds moved."));
 
   renderResultActions();
   show("results");
@@ -682,14 +778,29 @@ function onResults(m) {
 function renderResultActions() {
   const r = app.room;
   if (!r || app.screen === "arena" && r.phase !== "results") return;
-  const again = $("againBtn"), hint = $("resHint");
-  if (r.practice) {
-    again.hidden = false;
-    again.textContent = "Play again";
+  const again = $("againBtn"), hint = $("resHint"), newOpp = $("newOppBtn");
+
+  if (r.mode === "h2h") {
+    // Rematches need both players to agree
+    const opp = opponent();
+    const iAsked = r.rematch.includes(r.you), theyAsked = opp && r.rematch.includes(opp.id);
     $("resLeaveBtn").textContent = "Back to menu";
-    hint.textContent = "";
+    newOpp.hidden = false;
+    again.hidden = !opp;
+    again.disabled = iAsked;
+    again.textContent = iAsked ? "Rematch requested" : theyAsked ? "Accept rematch" : "Rematch";
+    again.classList.toggle("glow", Boolean(theyAsked && !iAsked));
+    const name = app.results ? (app.results.standings.find(s => s.id !== r.you) || {}).name : "Your opponent";
+    hint.textContent = !opp
+      ? (r.matched ? `${name} left. Find a new opponent at the same stake?` : `${name} left. Share code ${r.code} to challenge someone else.`)
+      : iAsked ? `Waiting for ${opp.name} to accept…`
+      : theyAsked ? `${opp.name} wants a rematch for ${fmt(r.stake)} ${r.currency}.`
+      : "Same stake again? You both need to agree to a rematch.";
     return;
   }
+
+  newOpp.hidden = true;
+  again.classList.remove("glow");
   $("resLeaveBtn").textContent = "Leave room";
   const host = r.players.find(p => p.isHost);
   again.hidden = !isHost();
@@ -702,10 +813,18 @@ function renderResultActions() {
 
 $("againBtn").onclick = () => {
   if (isBusy || !app.room) return;
-  if (app.room.practice) { busy(true); send({ type: "practice", ...identity() }); return; }
-  send({ type: "start" });
+  send({ type: "rematch" });
 };
 $("resLeaveBtn").onclick = leaveRoom;
+/* Straight back into matchmaking at the same stake */
+$("newOppBtn").onclick = () => {
+  if (!app.room) return;
+  const again = { stake: app.room.stake, currency: app.room.currency };
+  leaveRoom();
+  app.leaving = false;
+  app.search = again;
+  send({ type: "findMatch", ...again, ...identity() });
+};
 
 function confetti() {
   if (prefersReducedMotion) return;
@@ -863,8 +982,8 @@ $("walletBtn").onclick = () => {
    ====================================================================== */
 (function boot() {
   const code = new URLSearchParams(location.search).get("room");
+  selectTab(store.get("tt-mode") === "h2h" ? "h2h" : "group");
   if (code && /^[A-Za-z0-9]{5}$/.test(code)) {
-    selectTab("join");
     app.pendingCode = code.toUpperCase();
     codeInput.value = app.pendingCode;
     history.replaceState(null, "", location.pathname);   // a refresh shouldn't re-run the invite

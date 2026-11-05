@@ -98,21 +98,22 @@ function createServer(gameOpts = {}) {
       const entry = manager.find(key);
 
       switch (msg.type) {
-        case "create": {
+        case "create":            // group room, or a head-to-head challenge (mode: "h2h")
+        case "findMatch": {       // head to head against whoever is waiting at the same stake
           const stake = cleanStake(msg.stake);
           const currency = msg.currency === "USDC" ? "USDC" : "SOL";
           const w = who();
-          if (!w.wallet) return fail("Connect a wallet before creating a room.");
+          if (!w.wallet) return fail("Connect a wallet first.");
           if (stake === null) return fail("Enter a stake between 0.01 and 1000.");
-          const r = manager.create(w, { stake, currency });
+          const r = msg.type === "create"
+            ? manager.create(w, { stake, currency, mode: msg.mode })
+            : manager.findMatch(w, { stake, currency });
           if (r.error) fail(r.error);
           return;
         }
-        case "practice": {
-          const r = manager.practice(who());
-          if (r.error) fail(r.error);
-          return;
-        }
+        case "cancelSearch":
+          manager.cancelSearch(key);
+          return send({ type: "searchCancelled" });
         case "lookup": {
           const r = manager.lookup(msg.code);
           return send(r.error ? { type: "error", message: r.error, about: "lookup" } : { type: "lookup", room: r });
@@ -130,6 +131,12 @@ function createServer(gameOpts = {}) {
           if (err) fail(err);
           return;
         }
+        case "rematch": {
+          if (!entry) return fail("You are not in a room.");
+          const err = entry.room.requestRematch(entry.player);
+          if (err) fail(err);
+          return;
+        }
         case "answer":
           if (entry) entry.room.answer(entry.player, msg.index, msg.choice);
           return;
@@ -144,6 +151,7 @@ function createServer(gameOpts = {}) {
     ws.on("close", () => {
       if (!key || liveByKey.get(key) !== ws) return;   // a newer socket already took over
       liveByKey.delete(key);
+      manager.cancelSearch(key);
       const entry = manager.find(key);
       if (entry) entry.room.disconnect(entry.player);
     });

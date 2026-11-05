@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#07110c">
-<meta name="description" content="Live football trivia. Create a room, send the code to your friends and see who knows the game best.">
+<meta name="description" content="Live football trivia. Play a group room with friends, or go head to head for the pot.">
 <title>Tiki-Taka Trivia</title>
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
@@ -24,24 +24,29 @@
 </header>
 
 <main id="main">
-  <!-- Screen 1: Home (create / join / practice) -->
+  <!-- Screen 1: Home: pick a mode, or join with a code -->
   <section class="screen active panel" id="home" aria-labelledby="homeTitle">
-    <h2 id="homeTitle" tabindex="-1">Play with friends</h2>
-    <p class="sub">Start a room and send the code to friends. Up to 8 players, three questions, and faster answers score more points.</p>
+    <h2 id="homeTitle" tabindex="-1">Pick your game</h2>
+    <p class="sub">Three questions from Easy to Hard. Faster right answers score more, and the top score takes the pot.</p>
 
     <label class="field">
       <span>Your name</span>
       <input type="text" id="nameInput" maxlength="20" autocomplete="nickname" placeholder="e.g. Pirlo's Beard">
     </label>
 
-    <div class="tabs" role="tablist" aria-label="How do you want to play?">
-      <button role="tab" id="tab-create" aria-controls="pane-create" aria-selected="true">Create room</button>
-      <button role="tab" id="tab-join" aria-controls="pane-join" aria-selected="false" tabindex="-1">Join room</button>
-      <button role="tab" id="tab-practice" aria-controls="pane-practice" aria-selected="false" tabindex="-1">Practice</button>
+    <div class="tabs" role="tablist" aria-label="Game mode">
+      <button role="tab" id="tab-group" aria-controls="modePane" aria-selected="true">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><circle cx="17" cy="9.5" r="2.5"/><path d="M3 19c.6-3.3 3-5 6-5s5.4 1.7 6 5M15 14.6c2.6-.4 5 1 5.6 4.4"/></svg>
+        Group
+      </button>
+      <button role="tab" id="tab-h2h" aria-controls="modePane" aria-selected="false" tabindex="-1">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6.5" cy="8" r="2.8"/><circle cx="17.5" cy="8" r="2.8"/><path d="M2 19c.4-3 2.2-4.6 4.5-4.6S10.6 16 11 19M13 19c.4-3 2.2-4.6 4.5-4.6S21.6 16 22 19M12 5v6"/></svg>
+        Head to Head
+      </button>
     </div>
 
-    <!-- Create -->
-    <div class="pane" role="tabpanel" id="pane-create" aria-labelledby="tab-create">
+    <div class="pane" role="tabpanel" id="modePane" aria-labelledby="tab-group">
+      <p class="mode-blurb" id="modeBlurb"></p>
       <label class="field"><span>Stake per player</span></label>
       <div class="row">
         <input type="number" id="stake" min="0.01" max="1000" step="0.01" placeholder="0.00" inputmode="decimal" aria-label="Stake per player">
@@ -50,45 +55,50 @@
           <button role="radio" aria-checked="false" data-cur="USDC">USDC</button>
         </div>
       </div>
-      <div class="escrow">
-        Every player locks the same stake. The top score takes the <b>whole pot</b>, a shared top score splits it,
-        and if everyone is level, everyone gets their stake back.<br>
-        <span class="demo-note">Prototype: the escrow is simulated on Solana devnet, so no real funds move.</span>
-      </div>
+      <div class="escrow" id="escrowNote"></div>
       <label class="consent">
         <input type="checkbox" class="agree" id="agreeCreate">
         <span>I am 18 or older (or the legal age where I live), staking is lawful where I am, and I accept the
         <a href="#terms" data-open-terms>terms and conditions</a>.</span>
       </label>
-      <button class="btn solid wide" id="createBtn">Create room and lock stake</button>
+      <div class="mode-actions" data-mode="group">
+        <button class="btn solid wide" id="createBtn">Create group room</button>
+      </div>
+      <div class="mode-actions" data-mode="h2h" hidden>
+        <button class="btn solid wide" id="findBtn">Find an opponent</button>
+        <button class="btn wide" id="challengeBtn">Challenge a friend</button>
+      </div>
     </div>
 
-    <!-- Join -->
-    <div class="pane" role="tabpanel" id="pane-join" aria-labelledby="tab-join" hidden>
-      <label class="field">
-        <span>Room code</span>
-        <input type="text" id="codeInput" class="code-input" maxlength="5" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCDE" aria-describedby="codeHelp">
-      </label>
-      <p class="hint" id="codeHelp">Enter the 5-character code your friend sent you, or open their invite link.</p>
+    <p class="msg" id="homeMsg" role="alert"></p>
+
+    <!-- Join with a code (works for group rooms and head-to-head challenges) -->
+    <div class="join-box">
+      <h3 class="list-title">Got a code?</h3>
+      <div class="join-row">
+        <input type="text" id="codeInput" class="code-input" maxlength="5" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCDE" aria-label="Room code" aria-describedby="codeHelp">
+        <button class="btn" id="joinBtn" disabled>Find</button>
+      </div>
+      <p class="hint" id="codeHelp">Enter the 5-character code a friend sent you, or just open their invite link.</p>
       <div class="preview" id="joinPreview" hidden aria-live="polite"></div>
       <label class="consent" id="joinConsent" hidden>
         <input type="checkbox" class="agree" id="agreeJoin">
         <span>I am 18 or older (or the legal age where I live), staking is lawful where I am, and I accept the
         <a href="#terms" data-open-terms>terms and conditions</a>.</span>
       </label>
-      <button class="btn solid wide" id="joinBtn" disabled>Find room</button>
+      <button class="btn solid wide" id="joinConfirmBtn" hidden>Join</button>
+      <p class="msg" id="joinMsg" role="alert"></p>
     </div>
+  </section>
 
-    <!-- Practice -->
-    <div class="pane" role="tabpanel" id="pane-practice" aria-labelledby="tab-practice" hidden>
-      <div class="escrow">
-        A free warm-up against a bot. Nothing is staked and you don't need a wallet.
-        The bot answers like a person would: quick and sure on easy questions, slower and shakier on hard ones.
-      </div>
-      <button class="btn solid wide" id="practiceBtn">Start practice match</button>
-    </div>
-
-    <p class="msg" id="homeMsg" role="alert"></p>
+  <!-- Screen 1b: Matchmaking (head to head with a random opponent) -->
+  <section class="screen panel" id="search" aria-labelledby="searchTitle">
+    <div class="radar" aria-hidden="true"><i></i><i></i><i></i><span>VS</span></div>
+    <h2 id="searchTitle" tabindex="-1" class="center">Finding an opponent…</h2>
+    <p class="sub center" id="searchSub"></p>
+    <p class="search-time center" id="searchTime" aria-live="off">0:00</p>
+    <p class="hint center">Your stake locks only when we find a match. Share the site with a friend to get a game faster.</p>
+    <button class="btn wide" id="cancelSearchBtn">Cancel</button>
   </section>
 
   <!-- Screen 2: Room (waiting for players) -->
@@ -97,7 +107,7 @@
       <h2 id="roomTitle" tabindex="-1">Room</h2>
       <button class="btn ghost small" id="leaveRoomBtn">Leave</button>
     </div>
-    <p class="sub tight">Send this code to your friends so they can join.</p>
+    <p class="sub tight" id="roomSub">Send this code to your friends so they can join.</p>
     <div class="code-box" id="roomCode" aria-label="Room code"></div>
     <div class="share-row">
       <button class="btn small" id="copyCodeBtn">Copy code</button>
@@ -144,6 +154,7 @@
     <div class="ledger" id="ledger"></div>
     <div class="result-actions">
       <button class="btn solid" id="againBtn">Rematch</button>
+      <button class="btn" id="newOppBtn" hidden>New opponent</button>
       <button class="btn" id="resLeaveBtn">Leave room</button>
     </div>
     <p class="hint" id="resHint"></p>
@@ -170,8 +181,9 @@
     <h3>3. Your wallet</h3>
     <p>You connect a third-party wallet such as Phantom. You are solely responsible for your wallet, keys and recovery phrase. We never ask for them and cannot recover lost funds or reverse a transaction you signed.</p>
 
-    <h3>4. Rooms and how a match works</h3>
-    <p>A player creates a private room, sets the stake and shares the room code. Between 2 and 8 players can take part. Each match is three questions, one each at Easy, Medium and Hard difficulty, with a 10-second limit per question. A correct answer scores 500 points plus up to 500 more for speed. A wrong answer, or a question left unanswered when time runs out, scores zero. The highest total wins. Outcomes depend on skill and knowledge, but you may lose your stake, and winning is never guaranteed. Practice matches against a bot are free and involve no stake.</p>
+    <h3>4. Game modes and how a match works</h3>
+    <p>There are two modes. In Group mode, a player creates a room, sets the stake and shares the room code or link; between 2 and 8 players can take part, and the room creator starts the match. In Head to Head mode, exactly two players compete: either we pair you with another player who chose the same stake and currency, or you send a challenge link to a specific person. A head-to-head match starts automatically once both players are in.</p>
+    <p>Each match is three questions, one each at Easy, Medium and Hard difficulty, with a 10-second limit per question. A correct answer scores 500 points plus up to 500 more for speed. A wrong answer, or a question left unanswered when time runs out, scores zero. The highest total wins. Outcomes depend on skill and knowledge, but you may lose your stake, and winning is never guaranteed.</p>
 
     <h3>5. Stakes, escrow and payouts</h3>
     <ul>

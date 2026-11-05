@@ -1,5 +1,11 @@
 /* Room and match engine. The server owns the clock, the questions and the scores,
-   so clients only ever send "start", "answer" and "leave". */
+   so clients only ever send "start", "answer", "rematch" and "leave".
+
+   Two modes:
+   - group: a host creates a room, shares the code or link with up to 7 others, and starts the match.
+   - h2h:   head to head, exactly two players. Either a friend joins via a challenge link,
+            or two strangers who picked the same stake are paired by matchmaking.
+            The match starts on its own once both players are in; rematches need both to agree. */
 const crypto = require("crypto");
 const { TIERS } = require("./questions");
 
@@ -8,14 +14,13 @@ const DEFAULTS = {
   revealMs: 2800,      // pause on the correct answer before moving on
   countdownMs: 3000,   // "get ready" before question 1
   graceMs: 30000,      // how long a dropped player keeps their seat before being removed
-  maxPlayers: 8,
-  maxRooms: 1000
+  groupMax: 8,
+  maxRooms: 1000,
+  maxQueue: 1000
 };
 
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O or 1/I to misread
 const BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-const BOT_ACCURACY = [0.8, 0.6, 0.4];           // per tier: Easy, Medium, Hard
-const BOT_NAMES = ["Rival Bot"];
 
 const randomFrom = (alphabet, length) =>
   Array.from(crypto.randomBytes(length), b => alphabet[b % alphabet.length]).join("");
@@ -70,28 +75,31 @@ function settle(players, stake) {
   const standings = sorted.map(p => {
     const rank = 1 + sorted.filter(o => o.score > p.score).length;
     const payout = everyoneLevel || p.score === best ? share : 0;
-    return { id: p.id, name: p.name, wallet: p.wallet, isBot: p.isBot, left: p.left,
+    return { id: p.id, name: p.name, wallet: p.wallet, left: p.left,
              score: p.score, rank, payout, net: round2(payout - stake) };
   });
   return { pot, outcome, standings, winnerIds: everyoneLevel ? [] : winners.map(p => p.id) };
 }
 
 class Room {
-  constructor(manager, { code, stake, currency, practice }) {
+  constructor(manager, { code, stake, currency, mode, matched = false }) {
     this.manager = manager;
     this.opts = manager.opts;
     this.code = code;
     this.stake = stake;
     this.currency = currency;
-    this.practice = practice;
+    this.mode = mode;                 // "group" | "h2h"
+    this.matched = matched;           // h2h paired by matchmaking (private: no code to share)
+    this.maxPlayers = mode === "h2h" ? 2 : this.opts.groupMax;
     this.players = [];
     this.hostId = null;
-    this.phase = "lobby";           // lobby | countdown | question | reveal | results
+    this.phase = "lobby";             // lobby | countdown | question | reveal | results
     this.round = null;
     this.qIndex = -1;
     this.qStartedAt = 0;
     this.timers = new Set();
-    this.seen = new Set();          // question ids already used in this room
+    this.seen = new Set();            // question ids already used in this room
+    this.rematch = new Set();         // h2h: player ids who asked for a rematch
     this.lastResults = null;
     this.lastReveal = null;
     this.matchNo = 0;
@@ -107,18 +115,17 @@ class Room {
 
   /* ----- players ----- */
   get active() { return this.players.filter(p => !p.left); }
-  get humans() { return this.active.filter(p => !p.isBot); }
   player(id) { return this.players.find(p => p.id === id); }
   inMatch() { return ["countdown", "question", "reveal"].includes(this.phase); }
 
-  addPlayer({ key = null, name, wallet = null, isBot = false, send = null, recent = [] }) {
+  addPlayer({ key = null, name, wallet = null, send = null, recent = [] }) {
     const p = {
-      id: randomFrom(BASE58, 10), key, name, wallet, isBot, send,
-      connected: !isBot ? Boolean(send) : true, left: false, score: 0, answer: null,
+      id: randomFrom(BASE58, 10), key, name, wallet, send,
+      connected: Boolean(send), left: false, score: 0, answer: null,
       recent: new Set(recent), dropTimer: null
     };
     this.players.push(p);
-    if (!isBot && !this.hostId) this.hostId = p.id;
+    if (!this.hostId) this.hostId = p.id;
     return p;
   }
 
@@ -129,26 +136,27 @@ class Room {
     } else {
       this.players = this.players.filter(x => x !== p);
     }
+    this.rematch.delete(p.id);
     if (p.key) this.manager.byKey.delete(p.key);
     if (this.hostId === p.id) this.pickNewHost();
-    if (this.humans.length === 0) return this.manager.close(this);
+    if (this.active.length === 0) return this.manager.close(this);
     this.syncState();
     this.maybeEndQuestionEarly();
   }
 
   pickNewHost() {
-    const next = this.humans.find(p => p.connected) || this.humans[0];
+    const next = this.active.find(p => p.connected) || this.active[0];
     this.hostId = next ? next.id : null;
   }
 
   disconnect(p) {
     p.connected = false;
     p.send = null;
-    if (this.hostId === p.id && this.humans.some(h => h.connected)) this.pickNewHost();
-    if (!this.humans.some(h => h.connected)) {
+    if (this.hostId === p.id && this.active.some(h => h.connected)) this.pickNewHost();
+    if (!this.active.some(h => h.connected)) {
       // Nobody left watching: close the room after the grace period unless someone returns
       p.dropTimer = setTimeout(() => {
-        if (!this.humans.some(h => h.connected)) this.manager.close(this);
+        if (!this.active.some(h => h.connected)) this.manager.close(this);
       }, this.opts.graceMs);
     } else {
       p.dropTimer = setTimeout(() => { if (!p.connected) this.removePlayer(p); }, this.opts.graceMs);
@@ -177,18 +185,19 @@ class Room {
     return {
       type: "room",
       code: this.code,
-      practice: this.practice,
+      mode: this.mode,
+      matched: this.matched,
       phase: this.phase,
       you: forPlayer.id,
       hostId: this.hostId,
       stake: this.stake,
       currency: this.currency,
       pot: round2(this.stake * this.players.length),   // includes anyone who quit mid-match
-
-      maxPlayers: this.opts.maxPlayers,
+      maxPlayers: this.maxPlayers,
       matchNo: this.matchNo,
+      rematch: [...this.rematch],
       players: this.active.map(p => ({
-        id: p.id, name: p.name, wallet: p.wallet, isBot: p.isBot,
+        id: p.id, name: p.name, wallet: p.wallet,
         connected: p.connected, score: p.score, isHost: p.id === this.hostId
       }))
     };
@@ -196,12 +205,37 @@ class Room {
   syncState() { this.players.forEach(p => p.send && p.send(this.state(p))); }
 
   /* ----- match flow ----- */
+
+  /* Group: only the host starts. Head to head never needs a start button. */
   start(by) {
+    if (this.mode === "h2h") return "Head-to-head matches start on their own once both players are in.";
     if (by.id !== this.hostId) return "Only the host can start the match.";
     if (this.inMatch()) return "The match has already started.";
     if (this.active.length < 2) return "You need at least one other player to start.";
-    if (!this.practice && this.humans.some(p => !p.connected)) return "Wait for everyone to reconnect first.";
+    if (this.active.some(p => !p.connected)) return "Wait for everyone to reconnect first.";
+    this.begin();
+    return null;
+  }
 
+  /* "Play again" from the results screen */
+  requestRematch(by) {
+    if (this.mode === "group") return this.start(by);
+    if (this.phase !== "results") return "The match isn't over yet.";
+    if (this.active.length < 2) return "Your opponent has left.";
+    this.rematch.add(by.id);
+    if (this.active.every(p => this.rematch.has(p.id))) this.begin();
+    else this.syncState();
+    return null;
+  }
+
+  /* A head-to-head starts as soon as the second player arrives */
+  maybeAutoStart() {
+    if (this.mode !== "h2h" || this.inMatch() || this.active.length !== 2) return false;
+    this.begin();
+    return true;
+  }
+
+  begin() {
     this.players = this.active;                     // drop anyone who left the last match
     this.players.forEach(p => { p.score = 0; p.answer = null; });
     const avoid = new Set(this.seen);
@@ -209,12 +243,12 @@ class Room {
     this.round = buildRound(avoid);
     this.round.forEach(item => this.seen.add(item.id));
     this.qIndex = -1;
+    this.rematch.clear();
     this.lastResults = null;
     this.phase = "countdown";
     this.syncState();
     this.broadcast({ type: "countdown", ms: this.opts.countdownMs, total: this.round.length });
     this.later(this.opts.countdownMs, () => this.nextQuestion());
-    return null;
   }
 
   nextQuestion() {
@@ -225,7 +259,6 @@ class Room {
     this.lastReveal = null;
     this.active.forEach(p => { p.answer = null; });
     this.active.forEach(p => this.sendQuestion(p));
-    this.active.filter(p => p.isBot).forEach(bot => this.scheduleBot(bot));
     this.later(this.opts.questionMs, () => this.reveal());
   }
 
@@ -245,18 +278,6 @@ class Room {
       yourChoice: p.answer ? p.answer.choice : null,
       answered: this.active.filter(o => o.answer).map(o => o.id)
     });
-  }
-
-  /* Bots "think" for a human-looking stretch, slower and shakier as questions get harder */
-  scheduleBot(bot) {
-    const item = this.round[this.qIndex];
-    const level = item.tier.level;
-    const ms = this.opts.questionMs * (0.2 + Math.random() * 0.5 + level * 0.07);
-    const right = Math.random() < BOT_ACCURACY[level];
-    const wrong = [0, 1, 2, 3].filter(i => i !== item.correct);
-    const choice = right ? item.correct : wrong[Math.floor(Math.random() * wrong.length)];
-    const index = this.qIndex;
-    this.later(Math.min(ms, this.opts.questionMs - 50), () => this.answer(bot, index, choice));
   }
 
   answer(p, index, choice) {
@@ -309,10 +330,10 @@ class Room {
     const result = settle(this.players, this.stake);
     this.lastResults = {
       type: "results",
-      practice: this.practice,
+      mode: this.mode,
       stake: this.stake,
       currency: this.currency,
-      tx: this.practice ? null : fakeTxHash(),
+      tx: fakeTxHash(),
       ...result
     };
     this.players = this.active;
@@ -326,6 +347,7 @@ class RoomManager {
     this.opts = { ...DEFAULTS, ...opts };
     this.rooms = new Map();
     this.byKey = new Map();           // client key -> { room, player }
+    this.queue = new Map();           // client key -> { who, stake, currency, since } waiting for an opponent
   }
 
   newCode() {
@@ -342,15 +364,16 @@ class RoomManager {
     return entry;
   }
 
-  /* A browser tab can sit in one room at a time */
+  /* A browser tab can be in one room, or one queue, at a time */
   leaveCurrent(key) {
+    this.cancelSearch(key);
     const entry = this.find(key);
     if (entry) entry.room.removePlayer(entry.player);
   }
 
-  open({ stake, currency, practice }) {
+  open({ stake, currency, mode, matched = false }) {
     if (this.rooms.size >= this.opts.maxRooms) return null;
-    const room = new Room(this, { code: this.newCode(), stake, currency, practice });
+    const room = new Room(this, { code: this.newCode(), stake, currency, mode, matched });
     this.rooms.set(room.code, room);
     return room;
   }
@@ -361,46 +384,60 @@ class RoomManager {
     return p;
   }
 
-  create(who, { stake, currency }) {
+  /* Group room, or a head-to-head challenge for a friend */
+  create(who, { stake, currency, mode }) {
     this.leaveCurrent(who.key);
-    const room = this.open({ stake, currency, practice: false });
+    const room = this.open({ stake, currency, mode: mode === "h2h" ? "h2h" : "group" });
     if (!room) return { error: "The server is full right now. Try again in a minute." };
     const p = this.seat(room, who);
     room.syncState();
     return { room, player: p };
   }
 
-  practice(who) {
+  /* Head to head with a stranger: pair with whoever is waiting at the same stake */
+  findMatch(who, { stake, currency }) {
     this.leaveCurrent(who.key);
-    const room = this.open({ stake: 0, currency: "SOL", practice: true });
+    const opponent = [...this.queue.values()].find(e => e.stake === stake && e.currency === currency);
+    if (!opponent) {
+      if (this.queue.size >= this.opts.maxQueue) return { error: "Matchmaking is busy right now. Try again in a minute." };
+      this.queue.set(who.key, { who, stake, currency, since: Date.now() });
+      who.send({ type: "searching", stake, currency });
+      return { waiting: true };
+    }
+    this.queue.delete(opponent.who.key);
+    const room = this.open({ stake, currency, mode: "h2h", matched: true });
     if (!room) return { error: "The server is full right now. Try again in a minute." };
-    const p = this.seat(room, who);
-    room.addPlayer({ name: BOT_NAMES[0], isBot: true });
-    room.start(p);
-    return { room, player: p };
+    this.seat(room, opponent.who);
+    this.seat(room, who);
+    room.maybeAutoStart();                          // goes straight to the countdown
+    return { room };
   }
+
+  cancelSearch(key) { return this.queue.delete(key); }
 
   lookup(code) {
     const room = this.rooms.get(String(code || "").toUpperCase());
-    if (!room || room.practice) return { error: "No room with that code. Check it and try again." };
+    if (!room || room.matched) return { error: "No room with that code. Check it and try again." };
     const host = room.player(room.hostId);
     return {
-      code: room.code, stake: room.stake, currency: room.currency, phase: room.phase,
-      players: room.active.length, maxPlayers: this.opts.maxPlayers, host: host ? host.name : null
+      code: room.code, mode: room.mode, stake: room.stake, currency: room.currency, phase: room.phase,
+      players: room.active.length, maxPlayers: room.maxPlayers, host: host ? host.name : null
     };
   }
 
   join(who, code) {
     code = String(code || "").toUpperCase();
     const room = this.rooms.get(code);
-    if (!room || room.practice) return { error: "No room with that code. Check it and try again." };
+    if (!room || room.matched) return { error: "No room with that code. Check it and try again." };
     const already = this.find(who.key);
     if (already && already.room === room) { room.reconnect(already.player, who.send); return already; }
-    if (room.inMatch()) return { error: "That match is already under way. Ask the host to let you in for the next one." };
-    if (room.active.length >= this.opts.maxPlayers) return { error: "That room is full." };
+    if (room.inMatch()) return { error: "That match is already under way. Try again when it finishes." };
+    if (room.active.length >= room.maxPlayers) {
+      return { error: room.mode === "h2h" ? "That head-to-head already has two players." : "That room is full." };
+    }
     this.leaveCurrent(who.key);
     const p = this.seat(room, who);
-    room.syncState();
+    if (!room.maybeAutoStart()) room.syncState();
     return { room, player: p };
   }
 
@@ -414,7 +451,7 @@ class RoomManager {
     this.rooms.delete(room.code);
   }
 
-  shutdown() { [...this.rooms.values()].forEach(r => this.close(r)); }
+  shutdown() { [...this.rooms.values()].forEach(r => this.close(r)); this.queue.clear(); }
 }
 
 module.exports = { RoomManager, Room, buildRound, scoreAnswer, settle, shuffle, DEFAULTS };
