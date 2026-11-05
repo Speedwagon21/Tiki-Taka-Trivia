@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#07110c">
+<meta name="description" content="Live football trivia. Create a room, send the code to your friends and see who knows the game best.">
+<title>Tiki-Taka Trivia</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header>
+  <h1>Tiki-Taka <span>Trivia</span></h1>
+  <div class="head-actions">
+    <span class="net" id="netStatus" role="status" title="Server connection"><i></i><span>Connecting…</span></span>
+    <button class="icon-btn" id="muteBtn" aria-pressed="false" aria-label="Mute sounds" title="Sound on/off">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path class="spk" d="M4 9v6h4l5 4V5L8 9H4z"/><path class="wave" d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12"/><path class="cross" d="M16 9l6 6M22 9l-6 6"/></svg>
+    </button>
+    <button class="btn" id="walletBtn">Connect wallet</button>
+  </div>
+</header>
+
+<main id="main">
+  <!-- Screen 1: Home (create / join / practice) -->
+  <section class="screen active panel" id="home" aria-labelledby="homeTitle">
+    <h2 id="homeTitle" tabindex="-1">Play with friends</h2>
+    <p class="sub">Start a room and send the code to friends. Up to 8 players, three questions, and faster answers score more points.</p>
+
+    <label class="field">
+      <span>Your name</span>
+      <input type="text" id="nameInput" maxlength="20" autocomplete="nickname" placeholder="e.g. Pirlo's Beard">
+    </label>
+
+    <div class="tabs" role="tablist" aria-label="How do you want to play?">
+      <button role="tab" id="tab-create" aria-controls="pane-create" aria-selected="true">Create room</button>
+      <button role="tab" id="tab-join" aria-controls="pane-join" aria-selected="false" tabindex="-1">Join room</button>
+      <button role="tab" id="tab-practice" aria-controls="pane-practice" aria-selected="false" tabindex="-1">Practice</button>
+    </div>
+
+    <!-- Create -->
+    <div class="pane" role="tabpanel" id="pane-create" aria-labelledby="tab-create">
+      <label class="field"><span>Stake per player</span></label>
+      <div class="row">
+        <input type="number" id="stake" min="0.01" max="1000" step="0.01" placeholder="0.00" inputmode="decimal" aria-label="Stake per player">
+        <div class="seg" role="radiogroup" aria-label="Currency">
+          <button role="radio" aria-checked="true" class="on" data-cur="SOL">SOL</button>
+          <button role="radio" aria-checked="false" data-cur="USDC">USDC</button>
+        </div>
+      </div>
+      <div class="escrow">
+        Every player locks the same stake. The top score takes the <b>whole pot</b>, a shared top score splits it,
+        and if everyone is level, everyone gets their stake back.<br>
+        <span class="demo-note">Prototype: the escrow is simulated on Solana devnet, so no real funds move.</span>
+      </div>
+      <label class="consent">
+        <input type="checkbox" class="agree" id="agreeCreate">
+        <span>I am 18 or older (or the legal age where I live), staking is lawful where I am, and I accept the
+        <a href="#terms" data-open-terms>terms and conditions</a>.</span>
+      </label>
+      <button class="btn solid wide" id="createBtn">Create room and lock stake</button>
+    </div>
+
+    <!-- Join -->
+    <div class="pane" role="tabpanel" id="pane-join" aria-labelledby="tab-join" hidden>
+      <label class="field">
+        <span>Room code</span>
+        <input type="text" id="codeInput" class="code-input" maxlength="5" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCDE" aria-describedby="codeHelp">
+      </label>
+      <p class="hint" id="codeHelp">Enter the 5-character code your friend sent you, or open their invite link.</p>
+      <div class="preview" id="joinPreview" hidden aria-live="polite"></div>
+      <label class="consent" id="joinConsent" hidden>
+        <input type="checkbox" class="agree" id="agreeJoin">
+        <span>I am 18 or older (or the legal age where I live), staking is lawful where I am, and I accept the
+        <a href="#terms" data-open-terms>terms and conditions</a>.</span>
+      </label>
+      <button class="btn solid wide" id="joinBtn" disabled>Find room</button>
+    </div>
+
+    <!-- Practice -->
+    <div class="pane" role="tabpanel" id="pane-practice" aria-labelledby="tab-practice" hidden>
+      <div class="escrow">
+        A free warm-up against a bot. Nothing is staked and you don't need a wallet.
+        The bot answers like a person would: quick and sure on easy questions, slower and shakier on hard ones.
+      </div>
+      <button class="btn solid wide" id="practiceBtn">Start practice match</button>
+    </div>
+
+    <p class="msg" id="homeMsg" role="alert"></p>
+  </section>
+
+  <!-- Screen 2: Room (waiting for players) -->
+  <section class="screen panel" id="room" aria-labelledby="roomTitle">
+    <div class="room-head">
+      <h2 id="roomTitle" tabindex="-1">Room</h2>
+      <button class="btn ghost small" id="leaveRoomBtn">Leave</button>
+    </div>
+    <p class="sub tight">Send this code to your friends so they can join.</p>
+    <div class="code-box" id="roomCode" aria-label="Room code"></div>
+    <div class="share-row">
+      <button class="btn small" id="copyCodeBtn">Copy code</button>
+      <button class="btn small" id="copyLinkBtn">Copy invite link</button>
+      <button class="btn small" id="shareBtn" hidden>Share…</button>
+    </div>
+    <div class="stake-strip" id="roomStake"></div>
+    <h3 class="list-title">Players <span id="playerCount"></span></h3>
+    <ul class="players" id="playerList"></ul>
+    <button class="btn solid wide" id="startBtn">Start match</button>
+    <p class="hint center" id="roomHint"></p>
+    <p class="msg" id="roomMsg" role="alert"></p>
+  </section>
+
+  <!-- Screen 3: Game arena -->
+  <section class="screen panel" id="arena" aria-label="Match">
+    <div class="countdown" id="countdown" hidden aria-live="assertive"><span id="countdownNum">3</span><small>Get ready</small></div>
+    <div class="hud">
+      <div class="counter" id="counter">Question 1 of 3</div>
+      <div class="pot"><small>Total pot</small><strong id="pot">0</strong><small id="potCur">SOL</small></div>
+      <div class="score"><small>Your score</small><strong id="myScore">0</strong><small id="myRank"></small></div>
+    </div>
+    <div class="timer-row">
+      <div class="timer" id="timer" role="progressbar" aria-label="Time left" aria-valuemin="0" aria-valuemax="10" aria-valuenow="10"><i id="timerBar"></i></div>
+      <span class="secs" id="secs" aria-hidden="true">10</span>
+    </div>
+    <div class="tier-row">
+      <span class="badge easy" id="badge"><span class="pips" id="pips" aria-hidden="true"><i></i><i></i><i></i></span><span id="badgeText">Easy</span></span>
+    </div>
+    <h2 class="q" id="question" tabindex="-1"></h2>
+    <div class="answers" id="answers" role="group" aria-label="Answers"></div>
+    <p class="feedback" id="feedback" aria-live="polite"></p>
+    <ul class="chips" id="chips" aria-label="Players"></ul>
+    <p class="hint center keys">Tip: press 1–4 to answer.</p>
+  </section>
+
+  <!-- Screen 4: Results -->
+  <section class="screen panel" id="results" aria-labelledby="resTitle">
+    <div class="confetti" id="confetti" aria-hidden="true"></div>
+    <p class="sub tight" id="resSub"></p>
+    <h2 class="final" id="resTitle" tabindex="-1"></h2>
+    <p id="resText" class="sub"></p>
+    <ol class="standings" id="standings"></ol>
+    <div class="ledger" id="ledger"></div>
+    <div class="result-actions">
+      <button class="btn solid" id="againBtn">Rematch</button>
+      <button class="btn" id="resLeaveBtn">Leave room</button>
+    </div>
+    <p class="hint" id="resHint"></p>
+  </section>
+
+  <!-- Screen 5: Terms and conditions -->
+  <section class="screen panel terms" id="terms" aria-labelledby="termsTitle">
+    <button class="btn back" id="termsBack">Back</button>
+    <h2 id="termsTitle" tabindex="-1">Terms and conditions</h2>
+    <p class="sub" style="margin-bottom:0">Last updated 5 November 2026</p>
+    <div class="draft">Prototype draft. This is placeholder text with bracketed blanks, not legal advice. Real-money gaming is licensed and restricted in many places, so have a qualified lawyer review and complete it before launch.</div>
+
+    <h3>1. About these terms</h3>
+    <p>Tiki-Taka Trivia (the "Service") is operated by [Company name and registration number] ("we", "us"). By connecting a wallet or locking a stake you agree to these terms, our privacy notice and any rules shown on the match screens. If you do not agree, do not use the Service.</p>
+
+    <h3>2. Eligibility</h3>
+    <ul>
+      <li>You must be at least 18, or the legal gambling age where you live if that is higher.</li>
+      <li>You must have legal capacity to enter a binding contract and use only a wallet you control.</li>
+      <li>You must not use the Service from a restricted territory: [list of excluded countries and regions]. Using a VPN to get around this is prohibited.</li>
+      <li>One person may hold one account. We may ask you to verify your age, identity and location at any time.</li>
+    </ul>
+
+    <h3>3. Your wallet</h3>
+    <p>You connect a third-party wallet such as Phantom. You are solely responsible for your wallet, keys and recovery phrase. We never ask for them and cannot recover lost funds or reverse a transaction you signed.</p>
+
+    <h3>4. Rooms and how a match works</h3>
+    <p>A player creates a private room, sets the stake and shares the room code. Between 2 and 8 players can take part. Each match is three questions, one each at Easy, Medium and Hard difficulty, with a 10-second limit per question. A correct answer scores 500 points plus up to 500 more for speed. A wrong answer, or a question left unanswered when time runs out, scores zero. The highest total wins. Outcomes depend on skill and knowledge, but you may lose your stake, and winning is never guaranteed. Practice matches against a bot are free and involve no stake.</p>
+
+    <h3>5. Stakes, escrow and payouts</h3>
+    <ul>
+      <li>Every player in a room locks the same stake. When you lock a stake, it is transferred to an escrow smart contract and cannot be withdrawn until the match settles.</li>
+      <li>The pot is all players' stakes. The player with the highest score receives the pot, less any platform fee of [fee %] disclosed before you lock your stake.</li>
+      <li>If two or more players share the highest score, they split the pot equally. If every player finishes level, each player's stake is refunded in full.</li>
+      <li>If you leave or disconnect during a match, your stake stays in the pot and you score nothing for the questions you miss.</li>
+      <li>Blockchain transactions are final. Network fees are paid by you, and settlement times depend on the network.</li>
+      <li>Winnings may be withheld while we complete verification or investigate a suspected breach of these terms.</li>
+    </ul>
+
+    <h3>6. Fair play</h3>
+    <p>You must not use bots, scripts, search engines, other people or any outside help during a match. You must not collude with other players, create multiple accounts, exploit bugs, or manipulate the outcome in any way. If we find a breach, we may void the match, withhold winnings, close your account and report the matter to the authorities where required.</p>
+
+    <h3>7. Voided matches and disputes</h3>
+    <p>If a match cannot finish because of a technical fault, a disconnect on our side, an error in a question or answer, or a suspected breach of the rules, we may void it, and escrowed stakes will be returned to every player. To dispute a result, contact us within [14] days with your wallet address and the transaction reference. Our decision after review is final, subject to your legal rights.</p>
+
+    <h3>8. Responsible play</h3>
+    <p>Only stake money you can afford to lose. Staking is not a way to make money or solve financial problems. Set yourself a limit before you play, take regular breaks, and never chase losses. You can ask us to close your account or exclude you for a period at [contact email]. If gambling is causing you harm, contact a free local problem-gambling helpline or support service.</p>
+
+    <h3>9. Verification and financial crime</h3>
+    <p>We may be legally required to verify who you are, where your funds come from, and to screen wallets against sanctions lists. We may refuse or suspend service, freeze payouts and share information with regulators and law enforcement to meet these duties.</p>
+
+    <h3>10. Risks</h3>
+    <p>Crypto-assets such as SOL can change sharply in value. USDC and other stablecoins can lose their peg. Smart contracts and blockchains can contain bugs or be attacked, and wallet software can fail. You accept these risks when you use the Service.</p>
+
+    <h3>11. Our liability</h3>
+    <p>The Service is provided "as is" and "as available." To the extent the law allows, we are not liable for lost stakes, lost winnings, network failures, wallet or third-party faults, or indirect losses. Nothing in these terms limits liability that cannot be excluded by law.</p>
+
+    <h3>12. Privacy</h3>
+    <p>We process your wallet address, display name, match history, device and location data to run the Service, prevent fraud and meet legal duties, as described in our privacy notice [link]. Your display name and a shortened wallet address are shown to other players in your room. Blockchain transactions are public and cannot be deleted.</p>
+
+    <h3>13. Changes to these terms</h3>
+    <p>We may update these terms and will show the new date above. If you keep using the Service after a change, you accept the updated terms. Changes never affect a match that is already in progress.</p>
+
+    <h3>14. Governing law and contact</h3>
+    <p>These terms are governed by the laws of [jurisdiction], and its courts have jurisdiction, unless your local consumer law says otherwise. Questions and complaints: [contact email], [licence number and regulator, if licensed].</p>
+  </section>
+</main>
+
+<footer class="site-footer" id="siteFooter">
+  <a href="#terms" data-open-terms>Terms and conditions</a>
+  <a href="#terms" data-open-terms>Responsible play</a>
+  <p>18+ only. Staking carries financial risk, so only stake what you can afford to lose.</p>
+</footer>
+
+<!-- Wallet dialog: install/connect help, demo wallet, or connected details -->
+<dialog id="walletDialog" aria-labelledby="walletTitle">
+  <form method="dialog" class="dialog-body">
+    <h2 id="walletTitle">Wallet</h2>
+    <div id="walletBody"></div>
+    <div class="dialog-actions" id="walletActions"></div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<div class="sr-only" id="announcer" aria-live="polite"></div>
+
+<script src="script.js"></script>
+</body>
+</html>
