@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: tiki-taka-trivia
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
