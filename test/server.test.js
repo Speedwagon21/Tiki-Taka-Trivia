@@ -8,8 +8,8 @@ const WALLET_A = "7xQ9aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".slice(0, 44);
 const WALLET_B = "9bQ7bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".slice(0, 44);
 const FAST = { questionMs: 400, revealMs: 60, countdownMs: 30, graceMs: 200 };
 
-function startServer(opts = FAST) {
-  const { server, stop } = createServer(opts);
+function startServer(opts = FAST, limits) {
+  const { server, stop } = createServer(opts, limits);
   return new Promise(resolve => server.listen(0, () =>
     resolve({ server: { close: stop }, port: server.address().port })));
 }
@@ -43,7 +43,7 @@ function client(port, key) {
     close: () => ws.close()
   };
   return new Promise(resolve => ws.on("open", async () => {
-    c.send({ type: "hello", key });
+    c.send({ type: "hello", key: key.padEnd(16, "0") });
     await c.next("hello");
     resolve(c);
   }));
@@ -289,4 +289,113 @@ test("matchmaking needs a wallet and a valid stake", async () => {
   c.send({ type: "findMatch", name: "X", wallet: WALLET_A, stake: 0, currency: "SOL" });
   assert.match((await c.next("error")).message, /stake/);
   c.close(); server.close();
+});
+
+/* ---- security ---- */
+
+test("malformed fields cannot crash the server", async () => {
+  const { server, port } = await startServer();
+  const c = await client(port, "crash-attempt-1");
+  const bad = { toString: 1 };
+  c.send({ type: "create", name: "x", wallet: WALLET_A, stake: bad, currency: "SOL" });
+  assert.match((await c.next("error")).message, /stake/);
+  c.send({ type: "create", name: bad, wallet: WALLET_A, stake: 1, currency: bad, mode: bad, recent: bad });
+  const room = await c.next("room");
+  assert.equal(room.players[0].name, "Player");
+  c.send({ type: "lookup", code: bad });
+  assert.match((await c.next("error")).message, /No room/);
+  c.send({ type: "join", code: bad, name: bad, wallet: WALLET_B });
+  assert.match((await c.next("error")).message, /No room/);
+  c.send({ type: "answer", index: bad, choice: bad });
+  c.send({ type: "lookup", code: room.code });
+  assert.equal((await c.next("lookup")).room.code, room.code, "still serving after the bad messages");
+  c.close(); server.close();
+});
+
+test("a connection keeps one identity, so it cannot leave rooms behind", async () => {
+  const { server, port } = await startServer({ ...FAST, graceMs: 30 });
+  const c = await client(port, "one-identity-01");
+  const watcher = await client(port, "one-identity-watch");
+  const codes = [];
+  for (let i = 0; i < 5; i++) {
+    c.send({ type: "hello", key: `second-identity-${i}0` });
+    c.send({ type: "create", name: "x", wallet: WALLET_A, stake: 1, currency: "SOL" });
+    codes.push((await c.next("room")).code);
+  }
+  // Each create replaced the last room: only the newest code is live
+  watcher.send({ type: "lookup", code: codes[0] });
+  assert.match((await watcher.next("error")).message, /No room/);
+  c.close();
+  await new Promise(r => setTimeout(r, 150));
+  watcher.send({ type: "lookup", code: codes[4] });
+  assert.match((await watcher.next("error")).message, /No room/, "nothing left once the connection is gone");
+  watcher.close(); server.close();
+});
+
+test("short session keys are refused", async () => {
+  const { server, port } = await startServer();
+  const ws = new WebSocket(`ws://localhost:${port}/ws`);
+  await new Promise(r => ws.on("open", r));
+  const reply = new Promise(r => ws.on("message", raw => r(JSON.parse(raw))));
+  ws.send(JSON.stringify({ type: "hello", key: "guessable" }));
+  assert.match((await reply).message, /Bad client key/);
+  ws.close(); server.close();
+});
+
+test("connections from another website are refused, and each address has a connection limit", async () => {
+  const { server, port } = await startServer(FAST, { perIp: 3 });
+  const open = headers => new Promise(resolve => {
+    const ws = new WebSocket(`ws://localhost:${port}/ws`, { headers });
+    ws.on("open", () => resolve(ws));
+    ws.on("error", () => resolve(null));
+  });
+  assert.equal(await open({ Origin: "https://evil.example" }), null);
+  const own = await open({ Origin: `http://localhost:${port}` });
+  assert.ok(own);
+  const more = [await open(), await open()];
+  assert.ok(more.every(Boolean));
+  assert.equal(await open(), null, "the 4th connection from one address is refused");
+  more[0].close();
+  await new Promise(r => setTimeout(r, 50));
+  const again = await open();
+  assert.ok(again, "a slot frees up when a connection closes");
+  [own, more[1], again].forEach(ws => ws.close());
+  server.close();
+});
+
+test("room code guessing and message floods are cut off", async () => {
+  const { server, port } = await startServer(FAST, { lookupsPerMin: 5 });
+  const c = await client(port, "scanner-0000001");
+  for (let i = 0; i < 5; i++) { c.send({ type: "lookup", code: "ZZZZ" + i }); assert.match((await c.next("error")).message, /No room/); }
+  c.send({ type: "lookup", code: "ZZZZZ" });
+  assert.match((await c.next("error")).message, /Too many tries/);
+
+  const flood = await client(port, "flooder-0000001");
+  const closed = new Promise(r => flood.ws.on("close", code => r(code)));
+  for (let i = 0; i < 40; i++) flood.send({ type: "cancelSearch" });
+  assert.equal(await closed, 1008);
+  c.close(); server.close();
+});
+
+test("idle rooms are closed, names are de-duplicated and wallets are shortened for other players", async () => {
+  const { server, port } = await startServer({ ...FAST, idleMs: 150, sweepMs: 30 });
+  const a = await client(port, "idle-host-000001");
+  const b = await client(port, "idle-guest-00001");
+  a.send({ type: "create", name: "A\u200Bna\u202E", wallet: WALLET_A, stake: 1, currency: "SOL" });
+  const room = await a.next("room");
+  assert.equal(room.players[0].name, "Ana", "invisible and direction characters are stripped");
+  b.send({ type: "join", code: room.code, name: "ANA", wallet: WALLET_B });
+  const joined = await b.next("room");
+  assert.deepEqual(joined.players.map(p => p.name), ["Ana", "ANA 2"]);
+  assert.ok(joined.players.every(p => p.wallet.length < 12), "full addresses are not shared");
+  await a.next("closed", () => true, 2000);
+  a.close(); b.close(); server.close();
+});
+
+test("pages are served with a content security policy", async () => {
+  const { server, port } = await startServer();
+  const res = await fetch(`http://localhost:${port}/`);
+  assert.match(res.headers.get("content-security-policy"), /script-src 'self'/);
+  assert.ok(res.headers.get("strict-transport-security"));
+  server.close();
 });

@@ -16,6 +16,8 @@ const DEFAULTS = {
   graceMs: 30000,      // how long a dropped player keeps their seat before being removed
   groupMax: 8,
   maxRooms: 1000,
+  idleMs: 30 * 60 * 1000,   // a room with no match running is closed after this long
+  sweepMs: 60 * 1000,
   maxQueue: 1000
 };
 
@@ -26,6 +28,8 @@ const randomFrom = (alphabet, length) =>
   Array.from(crypto.randomBytes(length), b => alphabet[b % alphabet.length]).join("");
 const fakeTxHash = () => randomFrom(BASE58, 44);
 const round2 = n => Math.round(n * 100) / 100;
+// Other players only ever see a shortened address
+const short = addr => (addr ? addr.slice(0, 4) + "…" + addr.slice(-4) : null);
 
 /* Fisher-Yates shuffle (returns a new array) */
 function shuffle(list, rand = Math.random) {
@@ -75,7 +79,7 @@ function settle(players, stake) {
   const standings = sorted.map(p => {
     const rank = 1 + sorted.filter(o => o.score > p.score).length;
     const payout = everyoneLevel || p.score === best ? share : 0;
-    return { id: p.id, name: p.name, wallet: p.wallet, left: p.left,
+    return { id: p.id, name: p.name, wallet: short(p.wallet), left: p.left,
              score: p.score, rank, payout, net: round2(payout - stake) };
   });
   return { pot, outcome, standings, winnerIds: everyoneLevel ? [] : winners.map(p => p.id) };
@@ -103,6 +107,7 @@ class Room {
     this.lastResults = null;
     this.lastReveal = null;
     this.matchNo = 0;
+    this.lastActive = Date.now();
   }
 
   /* ----- timers ----- */
@@ -119,6 +124,10 @@ class Room {
   inMatch() { return ["countdown", "question", "reveal"].includes(this.phase); }
 
   addPlayer({ key = null, name, wallet = null, send = null, recent = [] }) {
+    this.lastActive = Date.now();
+    // No two players in a room share a name, so nobody can pose as someone else
+    const taken = n => this.active.some(o => o.name.toLowerCase() === n.toLowerCase());
+    for (let i = 2, base = name; taken(name); i++) name = `${base} ${i}`;
     const p = {
       id: randomFrom(BASE58, 10), key, name, wallet, send,
       connected: Boolean(send), left: false, score: 0, answer: null,
@@ -197,7 +206,7 @@ class Room {
       matchNo: this.matchNo,
       rematch: [...this.rematch],
       players: this.active.map(p => ({
-        id: p.id, name: p.name, wallet: p.wallet,
+        id: p.id, name: p.name, wallet: short(p.wallet),
         connected: p.connected, score: p.score, isHost: p.id === this.hostId
       }))
     };
@@ -236,6 +245,7 @@ class Room {
   }
 
   begin() {
+    this.lastActive = Date.now();
     this.players = this.active;                     // drop anyone who left the last match
     this.players.forEach(p => { p.score = 0; p.answer = null; });
     const avoid = new Set(this.seen);
@@ -325,6 +335,7 @@ class Room {
   }
 
   finish() {
+    this.lastActive = Date.now();
     this.phase = "results";
     this.matchNo++;
     const result = settle(this.players, this.stake);
@@ -348,6 +359,12 @@ class RoomManager {
     this.rooms = new Map();
     this.byKey = new Map();           // client key -> { room, player }
     this.queue = new Map();           // client key -> { who, stake, currency, since } waiting for an opponent
+    // Abandoned waiting rooms would otherwise pile up until the server is full
+    this.sweeper = setInterval(() => {
+      const cutoff = Date.now() - this.opts.idleMs;
+      [...this.rooms.values()].filter(r => !r.inMatch() && r.lastActive < cutoff).forEach(r => this.close(r));
+    }, this.opts.sweepMs);
+    this.sweeper.unref();
   }
 
   newCode() {
@@ -416,7 +433,7 @@ class RoomManager {
   cancelSearch(key) { return this.queue.delete(key); }
 
   lookup(code) {
-    const room = this.rooms.get(String(code || "").toUpperCase());
+    const room = this.rooms.get(typeof code === "string" ? code.toUpperCase() : "");
     if (!room || room.matched) return { error: "No room with that code. Check it and try again." };
     const host = room.player(room.hostId);
     return {
@@ -426,7 +443,7 @@ class RoomManager {
   }
 
   join(who, code) {
-    code = String(code || "").toUpperCase();
+    code = typeof code === "string" ? code.toUpperCase() : "";
     const room = this.rooms.get(code);
     if (!room || room.matched) return { error: "No room with that code. Check it and try again." };
     const already = this.find(who.key);
@@ -451,7 +468,7 @@ class RoomManager {
     this.rooms.delete(room.code);
   }
 
-  shutdown() { [...this.rooms.values()].forEach(r => this.close(r)); this.queue.clear(); }
+  shutdown() { clearInterval(this.sweeper); [...this.rooms.values()].forEach(r => this.close(r)); this.queue.clear(); }
 }
 
 module.exports = { RoomManager, Room, buildRound, scoreAnswer, settle, shuffle, DEFAULTS };

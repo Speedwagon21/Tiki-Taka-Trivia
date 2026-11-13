@@ -9,3 +9,6 @@ services:
     envVars:
       - key: NODE_VERSION
         value: "22"
+      # Render sits behind a proxy: without this every player would share one address and one connection limit
+      - key: TRUST_PROXY
+        value: "1"

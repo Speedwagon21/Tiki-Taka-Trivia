@@ -11,27 +11,41 @@ const MIME = {
   ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
   ".ico": "image/x-icon", ".json": "application/json", ".webmanifest": "application/manifest+json"
 };
-const SECURITY_HEADERS = {
+const BASE_HEADERS = {
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "strict-origin-when-cross-origin",
-  "X-Frame-Options": "DENY"
+  "X-Frame-Options": "DENY",
+  "Strict-Transport-Security": "max-age=31536000"
 };
+/* Only our own script, our own socket and the Solana devnet RPC. Matters on a page that talks to a wallet. */
+const headersFor = req => ({
+  ...BASE_HEADERS,
+  "Content-Security-Policy": [
+    "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'", "img-src 'self' data:",
+    `connect-src 'self' wss://${req.headers.host} ws://${req.headers.host} https://api.devnet.solana.com`,
+    "object-src 'none'", "base-uri 'none'", "frame-ancestors 'none'"
+  ].join("; ")
+});
+const LIMITS = { perIp: 20, total: 5000, lookupsPerMin: 30, msgsPerSec: 20 };
 
 /* ----- input cleaning: everything from a client is untrusted ----- */
 const cleanName = v => {
-  const s = String(v ?? "").replace(/[\u0000-\u001f\u007f<>]/g, "").replace(/\s+/g, " ").trim().slice(0, 20);
+  if (typeof v !== "string") return "Player";
+  // \p{C} covers control, zero-width and text-direction characters used to fake a name
+  const s = v.slice(0, 200).normalize("NFKC").replace(/[\p{C}<>]/gu, "").replace(/\s+/g, " ").trim().slice(0, 20);
   return s || "Player";
 };
 const cleanWallet = v => (typeof v === "string" && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(v) ? v : null);
-const cleanKey = v => (typeof v === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(v) ? v : null);
+const cleanKey = v => (typeof v === "string" && /^[A-Za-z0-9_-]{16,64}$/.test(v) ? v : null);
 const cleanRecent = v => (Array.isArray(v) ? v.filter(x => typeof x === "string" && x.length < 20).slice(0, 60) : []);
 function cleanStake(v) {
-  const n = Number(v);
+  const n = typeof v === "number" || typeof v === "string" ? Number(v) : NaN;
   if (!Number.isFinite(n) || n < 0.01 || n > 1000) return null;
   return Math.round(n * 100) / 100;
 }
 
 function serveStatic(req, res) {
+  const SECURITY_HEADERS = headersFor(req);
   if (req.method !== "GET" && req.method !== "HEAD") { res.writeHead(405, SECURITY_HEADERS); return res.end(); }
   const url = new URL(req.url, "http://x");
   if (url.pathname === "/healthz") {
@@ -54,32 +68,55 @@ function serveStatic(req, res) {
   });
 }
 
-function createServer(gameOpts = {}) {
+/* The player's address. Behind a host's proxy the socket address is the proxy, so only a header
+   the proxy overwrites can be trusted; with none, there is no per-address limit (the total cap still applies).
+   shortcut: trusts cf-connecting-ip when TRUST_PROXY is set, change it if the host uses another header */
+const clientIp = req => (process.env.TRUST_PROXY ? req.headers["cf-connecting-ip"] || null : req.socket.remoteAddress);
+
+function createServer(gameOpts = {}, limits = {}) {
+  const lim = { ...LIMITS, ...limits };
   const manager = new RoomManager(gameOpts);
   const server = http.createServer(serveStatic);
-  const wss = new WebSocketServer({ server, path: "/ws", maxPayload: 4096 });
+  const perIp = new Map();              // address -> open sockets
+  const lookups = new Map();            // address (or socket) -> { start, count }
+  const wss = new WebSocketServer({
+    server, path: "/ws", maxPayload: 4096,
+    verifyClient: ({ req, origin }) => {
+      // A browser on another site must not be able to drive our socket; non-browser clients send no Origin
+      if (origin) { try { if (new URL(origin).host !== req.headers.host) return false; } catch { return false; } }
+      const ip = clientIp(req);
+      return wss.clients.size < lim.total && (!ip || (perIp.get(ip) || 0) < lim.perIp);
+    }
+  });
   const liveByKey = new Map();          // client key -> the socket currently using it
 
-  wss.on("connection", ws => {
+  wss.on("connection", (ws, req) => {
+    const ip = clientIp(req);
+    if (ip) perIp.set(ip, (perIp.get(ip) || 0) + 1);
+    ws.on("close", () => {
+      lookups.delete(ws);
+      if (ip) perIp.get(ip) > 1 ? perIp.set(ip, perIp.get(ip) - 1) : (perIp.delete(ip), lookups.delete(ip));
+    });
     let key = null;
     ws.isAlive = true;
     ws.on("pong", () => { ws.isAlive = true; });
     const send = msg => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); };
     const fail = message => send({ type: "error", message });
 
-    // Simple flood guard: at most 20 messages per second per socket
+    // Flood guard: a real client never comes close, so anything over the limit is cut off
     let windowStart = Date.now(), count = 0;
 
-    ws.on("message", raw => {
+    ws.on("message", raw => { try {
       const now = Date.now();
       if (now - windowStart > 1000) { windowStart = now; count = 0; }
-      if (++count > 20) return;
+      if (++count > lim.msgsPerSec) return ws.close(1008, "Too many messages");
 
       let msg;
       try { msg = JSON.parse(raw); } catch { return; }
       if (!msg || typeof msg.type !== "string") return;
 
       if (msg.type === "hello") {
+        if (key) return;                 // one identity per connection, for its whole life
         const k = cleanKey(msg.key);
         if (!k) return fail("Bad client key.");
         const other = liveByKey.get(k);
@@ -115,6 +152,10 @@ function createServer(gameOpts = {}) {
           manager.cancelSearch(key);
           return send({ type: "searchCancelled" });
         case "lookup": {
+          // Stops someone scanning for live room codes
+          const id = ip || ws, slot = lookups.get(id);
+          if (!slot || now - slot.start > 60000) lookups.set(id, { start: now, count: 1 });
+          else if (++slot.count > lim.lookupsPerMin) return send({ type: "error", message: "Too many tries. Wait a minute and try again.", about: "lookup" });
           const r = manager.lookup(msg.code);
           return send(r.error ? { type: "error", message: r.error, about: "lookup" } : { type: "lookup", room: r });
         }
@@ -146,7 +187,7 @@ function createServer(gameOpts = {}) {
         default:
           return;
       }
-    });
+    } catch (err) { console.error("message handler failed:", err); } });   // one bad message must never take the server down
 
     ws.on("close", () => {
       if (!key || liveByKey.get(key) !== ws) return;   // a newer socket already took over
