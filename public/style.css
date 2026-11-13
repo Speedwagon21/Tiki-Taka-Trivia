@@ -394,3 +394,12 @@ dialog[open] { animation: zoom .2s ease-out; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+/* ---------- Installed on a phone's home screen: keep clear of the notch and home bar ---------- */
+@media (display-mode: standalone) {
+  header { padding-top: calc(12px + env(safe-area-inset-top)); padding-left: calc(16px + env(safe-area-inset-left)); padding-right: calc(16px + env(safe-area-inset-right)); }
+  .site-footer, main { padding-bottom: calc(32px + env(safe-area-inset-bottom)); }
+  .toast { bottom: calc(24px + env(safe-area-inset-bottom)); }
+  body { overscroll-behavior-y: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+  input { -webkit-user-select: text; user-select: text; }
+}

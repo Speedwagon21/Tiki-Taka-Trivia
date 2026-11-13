@@ -55,6 +55,9 @@ test("static files and health check are served", async () => {
   assert.equal(home.status, 200);
   assert.match(await home.text(), /Tiki-Taka/);
   assert.equal((await fetch(`http://localhost:${port}/healthz`)).status, 200);
+  const manifest = await fetch(`http://localhost:${port}/manifest.webmanifest`);
+  assert.equal(manifest.headers.get("content-type"), "application/manifest+json");
+  for (const icon of (await manifest.json()).icons) assert.equal((await fetch(`http://localhost:${port}/${icon.src}`)).status, 200);
   assert.equal((await fetch(`http://localhost:${port}/..%2fpackage.json`)).status, 403);
   assert.equal((await fetch(`http://localhost:${port}/nope.js`)).status, 404);
   server.close();
