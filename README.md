@@ -17,6 +17,7 @@ Live football trivia with two ways to play. Every match is three questions that 
 
 - **Server-authoritative game.** The server owns the questions, the clock and the scores, so answers never reach the browser before the reveal.
 - **48-question bank**, 16 per tier. Questions you've seen recently are avoided.
+- **Stake in SOL, USDC or ETH.** ETH rooms use an Ethereum address (Phantom or MetaMask); SOL and USDC rooms use a Solana one.
 - **Phantom wallet** on devnet, with balance display. If Phantom isn't installed there's a demo wallet, and on phones a link to open the page in the Phantom app.
 - **Reconnects.** Refresh mid-match and you keep your seat. A player who drops for more than 30 seconds is removed, and in Group mode the host role moves to someone else if the host leaves.
 - Sounds (with a mute switch), animations that respect reduced-motion, keyboard answers (1–4), screen-reader announcements and a phone-first layout.

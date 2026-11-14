@@ -35,7 +35,12 @@ const cleanName = v => {
   const s = v.slice(0, 200).normalize("NFKC").replace(/[\p{C}<>]/gu, "").replace(/\s+/g, " ").trim().slice(0, 20);
   return s || "Player";
 };
-const cleanWallet = v => (typeof v === "string" && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(v) ? v : null);
+const ETH_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+const cleanWallet = v => (typeof v === "string" && (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(v) || ETH_ADDRESS.test(v)) ? v : null);
+const CURRENCIES = ["SOL", "USDC", "ETH"];           // USDC here is the Solana token
+// An ETH stake can only be paid from, and paid out to, an Ethereum address (and the reverse)
+const walletFits = (wallet, currency) => ETH_ADDRESS.test(wallet) === (currency === "ETH");
+const wrongWallet = currency => `Connect ${currency === "ETH" ? "an Ethereum" : "a Solana"} wallet to play for ${currency}.`;
 const cleanKey = v => (typeof v === "string" && /^[A-Za-z0-9_-]{16,64}$/.test(v) ? v : null);
 const cleanRecent = v => (Array.isArray(v) ? v.filter(x => typeof x === "string" && x.length < 20).slice(0, 60) : []);
 function cleanStake(v) {
@@ -138,9 +143,10 @@ function createServer(gameOpts = {}, limits = {}) {
         case "create":            // group room, or a head-to-head challenge (mode: "h2h")
         case "findMatch": {       // head to head against whoever is waiting at the same stake
           const stake = cleanStake(msg.stake);
-          const currency = msg.currency === "USDC" ? "USDC" : "SOL";
+          const currency = CURRENCIES.includes(msg.currency) ? msg.currency : "SOL";
           const w = who();
           if (!w.wallet) return fail("Connect a wallet first.");
+          if (!walletFits(w.wallet, currency)) return fail(wrongWallet(currency));
           if (stake === null) return fail("Enter a stake between 0.01 and 1000.");
           const r = msg.type === "create"
             ? manager.create(w, { stake, currency, mode: msg.mode })
@@ -162,6 +168,8 @@ function createServer(gameOpts = {}, limits = {}) {
         case "join": {
           const w = who();
           if (!w.wallet) return fail("Connect a wallet before joining.");
+          const info = manager.lookup(msg.code);
+          if (!info.error && !walletFits(w.wallet, info.currency)) return send({ type: "error", message: wrongWallet(info.currency), about: "join" });
           const r = manager.join(w, msg.code);
           if (r.error) send({ type: "error", message: r.error, about: "join" });
           return;
