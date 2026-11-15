@@ -402,27 +402,3 @@ test("pages are served with a content security policy", async () => {
   assert.ok(res.headers.get("strict-transport-security"));
   server.close();
 });
-
-test("ETH rooms need an Ethereum address, and SOL rooms a Solana one", async () => {
-  const { server, port } = await startServer();
-  const ETH_A = "0x" + "a1".repeat(20), ETH_B = "0x" + "B2".repeat(20);
-  const host = await client(port, "eth-host-0000001");
-  const guest = await client(port, "eth-guest-000001");
-
-  host.send({ type: "create", name: "Ana", wallet: WALLET_A, stake: 0.05, currency: "ETH" });
-  assert.match((await host.next("error")).message, /Ethereum wallet/);
-  host.send({ type: "findMatch", name: "Ana", wallet: ETH_A, stake: 1, currency: "SOL" });
-  assert.match((await host.next("error")).message, /Solana wallet/);
-
-  host.send({ type: "create", name: "Ana", wallet: ETH_A, stake: 0.05, currency: "ETH" });
-  const room = await host.next("room");
-  assert.equal(room.currency, "ETH");
-
-  guest.send({ type: "join", code: room.code, name: "Ben", wallet: WALLET_B });
-  assert.match((await guest.next("error")).message, /Ethereum wallet/);
-  guest.send({ type: "join", code: room.code, name: "Ben", wallet: ETH_B });
-  const joined = await guest.next("room");
-  assert.equal(joined.pot, 0.1);
-  assert.equal(joined.players[1].wallet, "0xB2…B2B2");
-  host.close(); guest.close(); server.close();
-});

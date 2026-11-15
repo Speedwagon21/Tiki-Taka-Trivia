@@ -34,7 +34,6 @@ const app = {
   lookup: null,         // room preview on the Join tab
   wallet: null,         // { address, kind: "phantom" | "demo", balance }
   currency: "SOL",
-  chain: "sol",         // which kind of wallet we are connecting: "sol" | "eth"
   screen: "home",
   beforeTerms: "home",
   mode: "group",        // home screen tab: "group" | "h2h"
@@ -261,7 +260,7 @@ const MODES = {
     escrow: "You and your opponent lock the same stake. The winner takes <b>both stakes</b>; a tie refunds you in full."
   }
 };
-const DEMO_NOTE = '<span class="demo-note">Prototype: the escrow is simulated, so no real funds move.</span>';
+const DEMO_NOTE = '<span class="demo-note">Prototype: the escrow is simulated on Solana devnet, so no real funds move.</span>';
 
 /* Tabs with arrow-key support. The choice is remembered for next time. */
 const tabs = ["group", "h2h"];
@@ -313,22 +312,17 @@ function rememberQuestion(id) {
 const identity = () => (app.leaving = false, { name: playerName(), wallet: app.wallet ? app.wallet.address : null, recent: recent() });
 
 /* Shared checks before any stake is locked. Returns the stake, or null after showing why not. */
-async function readyToStake(msgId, consentId, currency) {
-  const chain = currency === "ETH" ? "eth" : "sol";
+async function readyToStake(msgId, consentId) {
   const stake = parseFloat($("stake").value);
   if (consentId === "agreeCreate" && !(stake >= 0.01 && stake <= 1000)) { setMsg(msgId, "Enter a stake between 0.01 and 1000."); return null; }
   if (!$(consentId).checked) { setMsg(msgId, "Confirm you are 18+ and accept the terms to continue."); return null; }
-  // ETH stakes need an Ethereum address; SOL and USDC need a Solana one
-  if ((!app.wallet || app.wallet.chain !== chain) && !(await connectWallet(chain))) {
-    setMsg(msgId, `Connect ${chain === "eth" ? "an Ethereum" : "a Solana"} wallet to play for ${currency}.`);
-    return null;
-  }
+  if (!app.wallet && !(await connectWallet())) { setMsg(msgId, "Connect a wallet to play for a stake."); return null; }
   return consentId === "agreeCreate" ? stake : true;
 }
 
 async function createRoom(mode) {
   if (isBusy) return;
-  const stake = await readyToStake("homeMsg", "agreeCreate", app.currency);
+  const stake = await readyToStake("homeMsg", "agreeCreate");
   if (stake == null) return;
   busy(true);
   setMsg("homeMsg", "Signing and locking your stake in escrow…", true);
@@ -341,7 +335,7 @@ $("challengeBtn").onclick = () => createRoom("h2h");
 /* Head to head with a random opponent */
 $("findBtn").onclick = async () => {
   if (isBusy) return;
-  const stake = await readyToStake("homeMsg", "agreeCreate", app.currency);
+  const stake = await readyToStake("homeMsg", "agreeCreate");
   if (stake == null) return;
   setMsg("homeMsg", "");
   app.search = { stake, currency: app.currency };
@@ -422,7 +416,7 @@ function renderJoin() {
 
 $("joinConfirmBtn").onclick = async () => {
   if (isBusy || !app.lookup) return;
-  if ((await readyToStake("joinMsg", "agreeJoin", app.lookup.currency)) == null) return;
+  if ((await readyToStake("joinMsg", "agreeJoin")) == null) return;
   busy(true);
   setMsg("joinMsg", "Signing and locking your stake in escrow…", true);
   await sleep(700);
@@ -773,7 +767,7 @@ function onResults(m) {
   m.standings.filter(s => s.payout > 0).forEach(s =>
     line(m.outcome === "refund" ? "refund" : "release", "(to=", em(short(s.wallet) || s.name), ", amount=", em(`${fmt(s.payout)} ${cur}`), ")"));
   line("status: ", em("confirmed"));
-  ledger.append(el("div", { className: "demo-note" }, "Simulated settlement. No real funds moved."));
+  ledger.append(el("div", { className: "demo-note" }, "Simulated settlement on devnet. No real funds moved."));
 
   renderResultActions();
   show("results");
@@ -852,11 +846,10 @@ function confetti() {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 /* ======================================================================
-   Wallet: Phantom on Solana devnet, an Ethereum wallet (Phantom or MetaMask) for ETH, or a demo wallet
+   Wallet: real Phantom on Solana devnet, or a demo wallet
    ====================================================================== */
 const DEVNET_RPC = "https://api.devnet.solana.com";
-const provider = (chain = app.chain) => {
-  if (chain === "eth") return window.phantom?.ethereum || window.ethereum || null;
+const provider = () => {
   const p = window.phantom?.solana || window.solana;
   return p && p.isPhantom ? p : null;
 };
@@ -877,7 +870,7 @@ async function fetchBalance(address) {
 function setWallet(w) {
   app.wallet = w;
   renderWallet();
-  if (w && w.kind === "phantom" && w.chain === "sol") fetchBalance(w.address).then(b => {
+  if (w && w.kind === "phantom") fetchBalance(w.address).then(b => {
     if (app.wallet && app.wallet.address === w.address) { app.wallet.balance = b; renderWallet(); }
   });
 }
@@ -893,59 +886,47 @@ function renderWallet() {
 }
 
 /* Resolves true once a wallet is connected, false if the player backed out */
-let walletResolve = null, watchingEth = false;
-async function connectWallet(chain = "sol") {
-  app.chain = chain;
-  const p = provider(chain);
+let walletResolve = null;
+async function connectWallet() {
+  const p = provider();
   if (p) {
     try {
       $("walletBtn").textContent = "Connecting…";
-      const address = chain === "eth"
-        ? (await p.request({ method: "eth_requestAccounts" }))[0]
-        : (await p.connect()).publicKey.toString();
-      setWallet({ address, kind: "phantom", chain, balance: null });
-      toast(chain === "eth" ? "Ethereum wallet connected" : "Phantom connected (devnet)");
-      if (chain === "eth" && !watchingEth) {      // follow account switches in the wallet
-        watchingEth = true;
-        p.on?.("accountsChanged", list => {
-          if (app.wallet?.chain === "eth" && app.wallet.kind === "phantom") setWallet(list[0] ? { ...app.wallet, address: list[0] } : null);
-        });
-      }
+      const res = await p.connect();
+      setWallet({ address: res.publicKey.toString(), kind: "phantom", balance: null });
+      toast("Phantom connected (devnet)");
       return true;
     } catch {
       renderWallet();
-      setMsg("homeMsg", "Wallet connection was cancelled.");
+      setMsg("homeMsg", "Phantom connection was cancelled.");
       return false;
     }
   }
-  return new Promise(resolve => { walletResolve = resolve; openWalletDialog(true); });
+  return new Promise(resolve => { walletResolve = resolve; openWalletDialog(); });
 }
 
-/* connecting: show the connect options even if a wallet for the other chain is already connected */
-function openWalletDialog(connecting = false) {
+function openWalletDialog() {
   const d = $("walletDialog"), body = $("walletBody"), actions = $("walletActions");
-  const w = connecting ? null : app.wallet, eth = (w ? w.chain : app.chain) === "eth";
+  const w = app.wallet;
   body.replaceChildren();
   actions.replaceChildren();
   if (w) {
-    $("walletTitle").textContent = w.kind === "demo" ? "Demo wallet" : eth ? "Ethereum wallet" : "Phantom wallet";
+    $("walletTitle").textContent = w.kind === "demo" ? "Demo wallet" : "Phantom wallet";
     body.append(
       el("p", { className: "mono" }, w.address),
       el("p", { className: "sub tight" }, w.kind === "demo"
         ? "A made-up address for trying the game. It holds nothing."
-        : eth ? "Used for ETH stakes." : `Network: Solana devnet${w.balance != null ? ` · Balance ${fmt(w.balance)} SOL` : ""}`)
+        : `Network: Solana devnet${w.balance != null ? ` · Balance ${fmt(w.balance)} SOL` : ""}`)
     );
     actions.append(
       el("button", { className: "btn", value: "close" }, "Close"),
       el("button", { className: "btn danger", value: "disconnect", onclick: disconnectWallet }, "Disconnect")
     );
   } else {
-    $("walletTitle").textContent = eth ? "Connect an Ethereum wallet" : "Connect a wallet";
+    $("walletTitle").textContent = "Connect a wallet";
     const here = encodeURIComponent(location.href), ref = encodeURIComponent(location.origin);
     body.append(
-      el("p", { className: "sub tight" }, eth
-        ? "ETH stakes need an Ethereum wallet, and none was found in this browser (Phantom and MetaMask both work). You can install one, or try the game with a demo wallet."
-        : "Phantom isn't available in this browser. You can install it, or try the game with a demo wallet."),
+      el("p", { className: "sub tight" }, "Phantom isn't available in this browser. You can install it, or try the game with a demo wallet."),
       el("div", { className: "wallet-options" },
         isMobile
           ? el("a", { className: "btn wide", href: `https://phantom.app/ul/browse/${here}?ref=${ref}` }, "Open in the Phantom app")
@@ -959,45 +940,41 @@ function openWalletDialog(connecting = false) {
 
 function useDemoWallet() {
   const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-  const eth = app.chain === "eth", slot = eth ? "tt-demo-wallet-eth" : "tt-demo-wallet";
-  let addr = store.get(slot);
+  let addr = store.get("tt-demo-wallet");
   if (!addr) {
-    const bytes = crypto.getRandomValues(new Uint8Array(eth ? 20 : 44));
-    addr = eth ? "0x" + Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("") : Array.from(bytes, b => B58[b % 58]).join("");
-    store.set(slot, addr);
+    addr = Array.from(crypto.getRandomValues(new Uint8Array(44)), b => B58[b % 58]).join("");
+    store.set("tt-demo-wallet", addr);
   }
-  setWallet({ address: addr, kind: "demo", chain: app.chain, balance: null });
+  setWallet({ address: addr, kind: "demo", balance: null });
   toast("Demo wallet connected");
 }
 
 function disconnectWallet() {
-  if (app.wallet?.kind === "phantom" && app.wallet.chain === "sol") provider("sol")?.disconnect().catch(() => {});
+  const p = provider();
+  if (app.wallet?.kind === "phantom" && p) p.disconnect().catch(() => {});
   setWallet(null);
 }
 
 $("walletDialog").addEventListener("close", () => {
-  if (walletResolve) { walletResolve(app.wallet?.chain === app.chain); walletResolve = null; }
+  if (walletResolve) { walletResolve(Boolean(app.wallet)); walletResolve = null; }
 });
 $("walletBtn").onclick = () => {
-  if (app.wallet) return openWalletDialog();
-  const chain = app.currency === "ETH" ? "eth" : "sol";
-  app.chain = chain;
-  provider(chain) ? connectWallet(chain) : openWalletDialog();
+  if (app.wallet || !provider()) openWalletDialog();
+  else connectWallet();
 };
 
 // Reconnect silently if this site is already trusted in Phantom, and follow account switches
 (function initPhantom() {
-  const p = provider("sol");
+  const p = provider();
   if (!p) return;
   p.connect({ onlyIfTrusted: true })
-    .then(res => setWallet({ address: res.publicKey.toString(), kind: "phantom", chain: "sol", balance: null }))
+    .then(res => setWallet({ address: res.publicKey.toString(), kind: "phantom", balance: null }))
     .catch(() => {});
   p.on?.("accountChanged", pk => {
-    if (app.wallet?.chain === "eth") return;
-    if (pk) setWallet({ address: pk.toString(), kind: "phantom", chain: "sol", balance: null });
+    if (pk) setWallet({ address: pk.toString(), kind: "phantom", balance: null });
     else setWallet(null);
   });
-  p.on?.("disconnect", () => { if (app.wallet?.kind === "phantom" && app.wallet.chain === "sol") setWallet(null); });
+  p.on?.("disconnect", () => { if (app.wallet?.kind === "phantom") setWallet(null); });
 })();
 
 /* ======================================================================
