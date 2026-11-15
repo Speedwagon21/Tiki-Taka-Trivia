@@ -38,6 +38,8 @@ const app = {
   beforeTerms: "home",
   mode: "group",        // home screen tab: "group" | "h2h"
   search: null,         // { stake, currency } while looking for a head-to-head opponent
+  escrow: null,         // { address } when the server takes real SOL stakes on devnet; null = simulated
+  payMsg: "homeMsg",    // where the current stake payment reports its progress
   pendingCode: null,    // code from an invite link, looked up once connected
   leaving: false        // set after "Leave" so stray updates don't pull us back in
 };
@@ -185,13 +187,19 @@ function handle(m) {
     case "hello":
       net.ready = true; net.retry = 0;
       setNet("online", "Online");
+      app.escrow = m.escrow || null;
+      renderEscrowNote();
       if (!m.resumed && app.room) {     // our room is gone (server restarted or it closed)
         resetRoom();
         show("home");
         setMsg("homeMsg", "You lost your place in the room. Create or join another one.");
       }
       // The matchmaking queue forgets us when the connection drops, so get back in line
-      if (app.search && !net.queue.some(q => q.type === "findMatch")) send({ type: "findMatch", ...app.search, ...identity() });
+      if (app.search && isEscrowed(app.search.currency)) {     // a real stake was refunded when the line dropped
+        stopSearch();
+        show("home");
+        setMsg("homeMsg", "The connection dropped while searching, so your stake was refunded. Search again when you're ready.");
+      } else if (app.search && !net.queue.some(q => q.type === "findMatch")) send({ type: "findMatch", ...app.search, ...identity() });
       net.queue.splice(0).forEach(send);
       if (app.pendingCode) { lookupCode(app.pendingCode); app.pendingCode = null; }
       return;
@@ -204,6 +212,11 @@ function handle(m) {
     case "results": return onResults(m);
     case "searching": return onSearching(m);
     case "searchCancelled": return;
+    case "intent": if (intentWaiter) intentWaiter.resolve(m); return;
+    case "refund": return toast(`Stake refunded: ${fmt4(m.lamports / 1e9)} SOL`);
+    case "payout":
+      if (app.results) { app.results.tx = m.tx || null; app.results.payoutFailed = Boolean(m.failed); renderLedger(app.results); }
+      return;
 
     case "lookup":
       app.lookup = m.room;
@@ -222,6 +235,8 @@ function handle(m) {
 
     case "error": {
       busy(false);
+      if (m.about === "intent") { if (intentWaiter) intentWaiter.reject(new Error(m.message)); return; }
+      if (m.about === "deposit") return setMsg(app.payMsg, m.message);
       if (m.about === "lookup" || m.about === "join") {
         if (m.about === "lookup") app.lookup = null;
         renderJoin();
@@ -260,6 +275,11 @@ const MODES = {
     escrow: "You and your opponent lock the same stake. The winner takes <b>both stakes</b>; a tie refunds you in full."
   }
 };
+const REAL_NOTE = '<span class="demo-note">SOL stakes are real transfers of test SOL on Solana devnet. Test SOL has no value. Set Phantom to devnet first (Settings, Developer Settings, Testnet Mode).</span>';
+const isEscrowed = currency => Boolean(app.escrow) && currency === "SOL";
+function renderEscrowNote() {   // static text only
+  $("escrowNote").innerHTML = MODES[app.mode].escrow + "<br>" + (isEscrowed(app.currency) ? REAL_NOTE : DEMO_NOTE);
+}
 const DEMO_NOTE = '<span class="demo-note">Prototype: the escrow is simulated on Solana devnet, so no real funds move.</span>';
 
 /* Tabs with arrow-key support. The choice is remembered for next time. */
@@ -276,7 +296,7 @@ function selectTab(name, focus = false) {
   });
   $("modePane").setAttribute("aria-labelledby", "tab-" + name);
   $("modeBlurb").textContent = MODES[name].blurb;
-  $("escrowNote").innerHTML = MODES[name].escrow + "<br>" + DEMO_NOTE;   // static text only
+  renderEscrowNote();
   document.querySelectorAll(".mode-actions").forEach(box => { box.hidden = box.dataset.mode !== name; });
   setMsg("homeMsg", "");
 }
@@ -294,6 +314,7 @@ document.querySelectorAll(".seg button").forEach(b => b.onclick = () => {
   b.classList.add("on");
   b.setAttribute("aria-checked", "true");
   app.currency = b.dataset.cur;
+  renderEscrowNote();
 });
 
 let isBusy = false;
@@ -325,9 +346,8 @@ async function createRoom(mode) {
   const stake = await readyToStake("homeMsg", "agreeCreate");
   if (stake == null) return;
   busy(true);
-  setMsg("homeMsg", "Signing and locking your stake in escrow…", true);
-  await sleep(700);   // mock signing delay, so it feels like a transaction
-  send({ type: "create", mode, stake, currency: app.currency, ...identity() });
+  const lock = await lockStake(isEscrowed(app.currency), { stake }, "homeMsg");
+  if (lock) send({ type: "create", mode, stake, currency: app.currency, ...lock, ...identity() });
 }
 $("createBtn").onclick = () => createRoom("group");
 $("challengeBtn").onclick = () => createRoom("h2h");
@@ -337,14 +357,27 @@ $("findBtn").onclick = async () => {
   if (isBusy) return;
   const stake = await readyToStake("homeMsg", "agreeCreate");
   if (stake == null) return;
-  setMsg("homeMsg", "");
-  app.search = { stake, currency: app.currency };
-  send({ type: "findMatch", ...app.search, ...identity() });
+  findOpponent(stake, app.currency);
 };
+async function findOpponent(stake, currency) {
+  let lock = {};
+  if (isEscrowed(currency)) {       // real stakes are held while you wait, and refunded if you cancel
+    busy(true);
+    lock = await lockStake(true, { stake }, "homeMsg");
+    if (!lock) return;
+  }
+  setMsg("homeMsg", "");
+  app.search = { stake, currency };
+  send({ type: "findMatch", ...app.search, ...lock, ...identity() });
+}
 
 const search = { timer: 0, since: 0 };
 function onSearching(m) {
   app.search = { stake: m.stake, currency: m.currency };
+  busy(false);
+  $("searchHint").textContent = isEscrowed(m.currency)
+    ? "Your stake is held in escrow while you wait. Cancel and it comes back, less the network fee."
+    : "Your stake locks only when we find a match. Share the site with a friend to get a game faster.";
   $("searchSub").textContent = `Head to head for ${fmt(m.stake)} ${m.currency} each. Winner takes ${fmt(m.stake * 2)} ${m.currency}.`;
   if (app.screen !== "search") {
     search.since = Date.now();
@@ -418,9 +451,9 @@ $("joinConfirmBtn").onclick = async () => {
   if (isBusy || !app.lookup) return;
   if ((await readyToStake("joinMsg", "agreeJoin")) == null) return;
   busy(true);
-  setMsg("joinMsg", "Signing and locking your stake in escrow…", true);
-  await sleep(700);
-  send({ type: "join", code: app.lookup.code, ...identity() });
+  const code = app.lookup.code;
+  const lock = await lockStake(app.lookup.escrowed, { code }, "joinMsg");
+  if (lock) send({ type: "join", code, ...lock, ...identity() });
 };
 
 /* ======================================================================
@@ -434,6 +467,7 @@ function onRoom(r) {
   stopSearch();
   setMsg("homeMsg", "");
   setMsg("joinMsg", "");
+  setMsg("resMsg", "");
 
   // Sounds and announcements for people arriving and leaving
   if (prev && prev.code === r.code) {
@@ -758,21 +792,30 @@ function onResults(m) {
       (s.net > 0 ? "+" : "") + fmt(s.net) + " " + cur)
   )));
 
-  // Settlement record. Built with DOM nodes so player names can't inject markup.
-  const ledger = $("ledger");
-  ledger.replaceChildren();
-  const line = (...parts) => ledger.append(el("div", {}, ...parts));
-  const em = t => el("em", {}, t);
-  line("escrow.tx  ", m.tx);
-  m.standings.filter(s => s.payout > 0).forEach(s =>
-    line(m.outcome === "refund" ? "refund" : "release", "(to=", em(short(s.wallet) || s.name), ", amount=", em(`${fmt(s.payout)} ${cur}`), ")"));
-  line("status: ", em("confirmed"));
-  ledger.append(el("div", { className: "demo-note" }, "Simulated settlement on devnet. No real funds moved."));
-
+  renderLedger(m);
   renderResultActions();
   show("results");
   if (won && m.outcome === "win") { sound.win(); confetti(); } else if (!won && m.outcome !== "refund") sound.lose();
   else sound.right();
+}
+
+/* Settlement record. Built with DOM nodes so player names can't inject markup. */
+function renderLedger(m) {
+  const ledger = $("ledger"), cur = m.currency;
+  ledger.replaceChildren();
+  const line = (...parts) => ledger.append(el("div", {}, ...parts));
+  const em = t => el("em", {}, t);
+  line("escrow.tx  ", m.tx || (m.escrowed ? "…" : ""));
+  m.standings.filter(s => s.payout > 0).forEach(s =>
+    line(m.outcome === "refund" ? "refund" : "release", "(to=", em(short(s.wallet) || s.name), ", amount=", em(`${fmt(s.payout)} ${cur}`), ")"));
+  if (!m.escrowed) {
+    line("status: ", em("confirmed"));
+    ledger.append(el("div", { className: "demo-note" }, "Simulated settlement on devnet. No real funds moved."));
+    return;
+  }
+  line("status: ", m.payoutFailed ? el("b", { className: "bad" }, "payout failed, contact support") : em(m.tx ? "confirmed on Solana devnet" : "sending payout…"));
+  if (m.tx) ledger.append(el("div", {}, el("a", { href: `https://explorer.solana.com/tx/${m.tx}?cluster=devnet`, target: "_blank", rel: "noopener" }, "View the payout on Solana Explorer")));
+  ledger.append(el("div", { className: "demo-note" }, "Paid in test SOL on Solana devnet, less the network fee. Test SOL has no value."));
 }
 
 function renderResultActions() {
@@ -795,6 +838,7 @@ function renderResultActions() {
       ? (r.matched ? `${name} left. Find a new opponent at the same stake?` : `${name} left. Share code ${r.code} to challenge someone else.`)
       : iAsked ? `Waiting for ${opp.name} to accept…`
       : theyAsked ? `${opp.name} wants a rematch for ${fmt(r.stake)} ${r.currency}.`
+      : r.escrowed ? `Same stake again? You both pay ${fmt(r.stake)} ${r.currency} for a rematch.`
       : "Same stake again? You both need to agree to a rematch.";
     return;
   }
@@ -809,10 +853,29 @@ function renderResultActions() {
   hint.textContent = isHost()
     ? (r.players.length < 2 ? "Everyone else left. Share the code to get more players in." : `Same room, same ${fmt(r.stake)} ${r.currency} stake. New players can still join with code ${r.code}.`)
     : `Waiting for ${host ? host.name : "the host"} to start a rematch. Room code ${r.code}.`;
+  if (!r.escrowed) return;
+  // Real stakes: everyone pays again before the next match can start
+  const mine = me(), owing = r.players.filter(p => !p.paid);
+  if (mine && !mine.paid) {
+    again.hidden = false;
+    again.disabled = false;
+    again.textContent = `Stake ${fmt(r.stake)} ${r.currency} for the next match`;
+    hint.textContent = "Each match needs a new stake. Leave the room if you're done.";
+  } else if (owing.length) {
+    again.disabled = true;
+    hint.textContent = `Waiting for ${owing.map(p => p.name).join(", ")} to stake for the next match.`;
+  }
 }
 
-$("againBtn").onclick = () => {
-  if (isBusy || !app.room) return;
+$("againBtn").onclick = async () => {
+  const r = app.room;
+  if (isBusy || !r) return;
+  if (r.escrowed && !me().paid) {
+    busy(true);
+    const lock = await lockStake(true, { room: true }, "resMsg");
+    if (lock) send({ type: "pay", rematch: r.mode === "h2h", ...lock });   // in head to head, paying is your vote
+    return;
+  }
   send({ type: "rematch" });
 };
 $("resLeaveBtn").onclick = leaveRoom;
@@ -821,9 +884,7 @@ $("newOppBtn").onclick = () => {
   if (!app.room) return;
   const again = { stake: app.room.stake, currency: app.room.currency };
   leaveRoom();
-  app.leaving = false;
-  app.search = again;
-  send({ type: "findMatch", ...again, ...identity() });
+  findOpponent(again.stake, again.currency);
 };
 
 function confetti() {
@@ -844,6 +905,68 @@ function confetti() {
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+/* ======================================================================
+   Paying a stake. With an escrow on the server, SOL stakes are real transfers on Solana devnet:
+   ask the server what to pay, have Phantom sign it, send it, and hand the server the signature.
+   ====================================================================== */
+const MEMO_PROGRAM = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
+const fmt4 = n => (Math.round(n * 1e4) / 1e4).toLocaleString(undefined, { maximumFractionDigits: 4 });
+
+let web3Loading = null;       // the Solana library is big, so it only loads when a payment needs it
+const loadWeb3 = () => web3Loading || (web3Loading = new Promise((resolve, reject) => {
+  document.head.append(el("script", {
+    src: "vendor/web3.js", onload: resolve,
+    onerror: () => { web3Loading = null; reject(new Error("Couldn't load the Solana library. Check your connection and try again.")); }
+  }));
+}));
+
+let intentWaiter = null;
+const askIntent = req => new Promise((resolve, reject) => {
+  intentWaiter = { resolve, reject };
+  send({ type: "intent", ...req });
+  setTimeout(() => reject(new Error("The server didn't answer. Try again.")), 15000);
+});
+
+async function payStake(req, msgId) {
+  if (!app.wallet || app.wallet.kind !== "phantom") throw new Error("SOL stakes need the Phantom wallet. A demo wallet can only play USDC rooms.");
+  setMsg(msgId, "Preparing your stake…", true);
+  const [intent] = await Promise.all([askIntent(req), loadWeb3()]);
+  const { Connection, PublicKey, Transaction, SystemProgram, TransactionInstruction } = window.solanaWeb3;
+  const conn = new Connection(intent.rpc, "confirmed");
+  const from = new PublicKey(app.wallet.address);
+  if (await conn.getBalance(from) < intent.lamports + 10000) {
+    throw new Error(`You need ${fmt4(intent.lamports / 1e9)} devnet SOL plus a small fee. Get free test SOL at faucet.solana.com.`);
+  }
+  const tx = new Transaction().add(
+    SystemProgram.transfer({ fromPubkey: from, toPubkey: new PublicKey(intent.to), lamports: intent.lamports }),
+    // The memo is how the server knows this payment is yours
+    new TransactionInstruction({ keys: [], programId: new PublicKey(MEMO_PROGRAM), data: new TextEncoder().encode(intent.ref) }));
+  tx.feePayer = from;
+  tx.recentBlockhash = (await conn.getLatestBlockhash()).blockhash;
+  setMsg(msgId, "Approve the transfer in Phantom…", true);
+  const signed = await provider().signTransaction(tx);
+  setMsg(msgId, "Confirming your stake on Solana devnet…", true);
+  // We send it to devnet ourselves, so it can never land on the real-money network
+  const signature = await conn.sendRawTransaction(signed.serialize());
+  return { ref: intent.ref, signature };
+}
+
+/* Returns what to attach to the next message ({} when simulated), or null if the payment didn't happen */
+async function lockStake(escrowed, req, msgId) {
+  app.payMsg = msgId;
+  if (!escrowed) {
+    setMsg(msgId, "Signing and locking your stake in escrow…", true);
+    await sleep(700);   // mock signing delay, so it feels like a transaction
+    return {};
+  }
+  try { return { deposit: await payStake(req, msgId) }; }
+  catch (err) {
+    busy(false);
+    setMsg(msgId, /reject|cancel|denied/i.test(err.message || "") ? "Payment cancelled. Nothing was taken." : err.message || "The payment didn't go through.");
+    return null;
+  }
+}
 
 /* ======================================================================
    Wallet: real Phantom on Solana devnet, or a demo wallet

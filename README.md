@@ -21,6 +21,17 @@ Live football trivia with two ways to play. Every match is three questions that 
 - **Reconnects.** Refresh mid-match and you keep your seat. A player who drops for more than 30 seconds is removed, and in Group mode the host role moves to someone else if the host leaves.
 - Sounds (with a mute switch), animations that respect reduced-motion, keyboard answers (1–4), screen-reader announcements and a phone-first layout.
 
+## Real stakes on devnet (optional)
+
+By default every stake is simulated. Set `ESCROW_SECRET` to switch SOL rooms to real transfers of test SOL on Solana devnet:
+
+- `ESCROW_SECRET`: the escrow wallet's secret key as a JSON array of numbers. Keep it in the host's secret settings, never in the repo.
+- `SOLANA_RPC` (optional): the RPC address. Defaults to `https://api.devnet.solana.com`.
+
+With it set, a player pays the stake from Phantom before taking a seat, the server confirms the payment on-chain, and the pot is paid to the winner when the match ends. Leaving a waiting room, cancelling a search or a room closing refunds the stake, less the network fee. Each rematch needs a new stake. USDC rooms stay simulated.
+
+The escrow wallet needs a small float of SOL (about 0.01) so it never drops below Solana's minimum account balance. Deposits are tracked in memory only: if the process is killed without a clean shutdown, stakes it was holding stay in the escrow wallet. Do not point this at mainnet.
+
 ## Run it
 
 ```bash
@@ -36,6 +47,7 @@ To try it alone, open two browser windows (or one normal and one private). Creat
 ```
 server/index.js      HTTP static server + WebSocket endpoint at /ws
 server/game.js       rooms, matchmaking, rounds, scoring, payouts
+server/escrow.js     on-chain stake payments, payouts and refunds
 server/questions.js  question bank (server-only)
 public/              the front end (index.html, script.js, style.css)
 test/                node:test suites

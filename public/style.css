@@ -403,3 +403,6 @@ dialog[open] { animation: zoom .2s ease-out; }
   body { overscroll-behavior-y: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
   input { -webkit-user-select: text; user-select: text; }
 }
+
+.ledger a { color: var(--green); }
+.ledger .bad { color: var(--red); }

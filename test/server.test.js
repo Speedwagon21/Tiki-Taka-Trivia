@@ -8,8 +8,8 @@ const WALLET_A = "7xQ9aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".slice(0, 44);
 const WALLET_B = "9bQ7bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".slice(0, 44);
 const FAST = { questionMs: 400, revealMs: 60, countdownMs: 30, graceMs: 200 };
 
-function startServer(opts = FAST, limits) {
-  const { server, stop } = createServer(opts, limits);
+function startServer(opts = FAST, limits, escrow) {
+  const { server, stop } = createServer(opts, limits, escrow);
   return new Promise(resolve => server.listen(0, () =>
     resolve({ server: { close: stop }, port: server.address().port })));
 }
@@ -400,5 +400,154 @@ test("pages are served with a content security policy", async () => {
   const res = await fetch(`http://localhost:${port}/`);
   assert.match(res.headers.get("content-security-policy"), /script-src 'self'/);
   assert.ok(res.headers.get("strict-transport-security"));
+  server.close();
+});
+
+/* ---- escrow: real stakes, with the blockchain replaced by a stand-in ---- */
+
+const FEE = 5000, SOL = 1e9;
+/* Stand-in chain: a "signature" of `ok:<wallet>` is a confirmed payment from that wallet */
+function fakeEscrow() {
+  const intents = new Map(), sent = [];
+  return {
+    address: "EscrowWa11et", rpcUrl: "test", fee: FEE, sent,
+    intent(owner, lamports) { const ref = "ref" + intents.size; intents.set(ref, { owner, lamports }); return { ref, to: this.address, lamports }; },
+    async verify(owner, ref, signature) {
+      const i = intents.get(ref);
+      if (!i || i.owner !== owner || !signature.startsWith("ok:")) throw Object.assign(new Error("no"), { userMessage: "Payment not found." });
+      intents.delete(ref);
+      return { payer: signature.slice(3), lamports: i.lamports };
+    },
+    pay(transfers) { sent.push(transfers); return Promise.resolve("tx" + sent.length); },
+    idle: () => Promise.resolve()
+  };
+}
+/* Asks what to pay, "pays" it from `wallet`, and returns the deposit to attach to the next message */
+async function stake(c, wallet, req) {
+  c.send({ type: "intent", ...req });
+  const intent = await c.next("intent");
+  return { deposit: { ref: intent.ref, signature: "ok:" + wallet }, lamports: intent.lamports };
+}
+
+test("escrow: stakes are taken before seating, refunded on leaving, and the pot is paid to the winner", async () => {
+  const escrow = fakeEscrow();
+  const { server, port } = await startServer({ ...FAST, questionMs: 5000 }, undefined, escrow);
+  const host = await client(port, "escrow-host-0001");
+  const guest = await client(port, "escrow-guest-001");
+  assert.equal(host.inbox.find(m => m.type === "hello").escrow.address, "EscrowWa11et");
+
+  // No payment, or a payment that isn't on-chain: no room
+  host.send({ type: "create", name: "Ana", wallet: WALLET_A, stake: 2, currency: "SOL" });
+  assert.match((await host.next("error")).message, /payment is missing/);
+  const bad = await stake(host, WALLET_A, { stake: 2 });
+  host.send({ type: "create", name: "Ana", wallet: WALLET_A, stake: 2, currency: "SOL", deposit: { ...bad.deposit, signature: "nope" } });
+  assert.match((await host.next("error")).message, /Payment not found/);
+
+  const h = await stake(host, WALLET_A, { stake: 2 });
+  assert.equal(h.lamports, 2 * SOL);
+  host.send({ type: "create", name: "Ana", wallet: WALLET_B, stake: 2, currency: "SOL", ...h });
+  const room = await host.next("room");
+  assert.equal(room.escrowed, true);
+  assert.equal(room.players[0].paid, true);
+  assert.equal(room.players[0].wallet, "7xQ9…aaaa", "the wallet that paid is used, not the one claimed");
+
+  // A payment can't be used twice
+  host.send({ type: "pay", ...h });
+  guest.send({ type: "join", code: room.code, name: "Ben", wallet: WALLET_B, ...h });
+  assert.match((await guest.next("error")).message, /Payment not found/);
+
+  // Guest pays and joins, leaves the waiting room, and gets the stake back less the fee
+  const g1 = await stake(guest, WALLET_B, { code: room.code });
+  guest.send({ type: "join", code: room.code, name: "Ben", wallet: WALLET_B, ...g1 });
+  await guest.next("room");
+  guest.send({ type: "leave" });
+  const refund = await guest.next("refund");
+  assert.equal(refund.lamports, 2 * SOL - FEE);
+  assert.deepEqual(escrow.sent[0], [{ to: WALLET_B, lamports: 2 * SOL - FEE }]);
+
+  const g2 = await stake(guest, WALLET_B, { code: room.code });
+  guest.send({ type: "join", code: room.code, name: "Ben", wallet: WALLET_B, ...g2 });
+  await host.next("room", m => m.players.length === 2 && m.players.every(p => p.paid));
+  host.send({ type: "start" });
+
+  for (let i = 0; i < 3; i++) {
+    await host.next("question", m => m.index === i);
+    host.send({ type: "answer", index: i, choice: 0 });
+    guest.send({ type: "answer", index: i, choice: 0 });
+    await host.next("reveal", m => m.index === i);
+  }
+  const results = await host.next("results");
+  assert.equal(results.escrowed, true);
+  assert.equal(results.tx, null, "the real signature arrives with the payout");
+  assert.equal((await host.next("payout")).tx, "tx2");
+  const paid = escrow.sent[1];
+  assert.equal(paid.reduce((sum, t) => sum + t.lamports, 0) + FEE, 4 * SOL, "the whole pot goes out, less one fee");
+  const expected = results.outcome === "refund" ? [WALLET_A, WALLET_B] : [results.standings[0].id === results.winnerIds[0] && results.winnerIds[0] === room.you ? WALLET_A : WALLET_B];
+  assert.deepEqual(paid.map(t => t.to).sort(), expected.sort());
+
+  // The next match needs new stakes from everyone
+  host.send({ type: "start" });
+  assert.match((await host.next("error")).message, /pay their stake/);
+  host.send({ type: "pay", ...(await stake(host, WALLET_A, { room: true })) });
+  guest.send({ type: "pay", ...(await stake(guest, WALLET_B, { room: true })) });
+  await host.next("room", m => m.phase === "results" && m.players.every(p => p.paid));
+  host.send({ type: "start" });
+  await guest.next("countdown");
+
+  // Server shutdown mid-match returns what it holds
+  const before = escrow.sent.length;
+  await server.close();
+  assert.equal(escrow.sent.length, before + 2);
+  host.close(); guest.close();
+});
+
+test("escrow: matchmaking refunds a cancelled search, and a seat that can't be taken", async () => {
+  const escrow = fakeEscrow();
+  const { server, port } = await startServer(FAST, undefined, escrow);
+  const a = await client(port, "escrow-mm-a-0001");
+  const b = await client(port, "escrow-mm-b-0001");
+  const c = await client(port, "escrow-mm-c-0001");
+
+  a.send({ type: "findMatch", name: "A", wallet: WALLET_A, stake: 1, currency: "SOL", ...(await stake(a, WALLET_A, { stake: 1 })) });
+  await a.next("searching");
+  a.send({ type: "cancelSearch" });
+  assert.equal((await a.next("refund")).lamports, SOL - FEE);
+
+  // USDC is still simulated: no payment needed even with the escrow on
+  a.send({ type: "create", name: "A", wallet: WALLET_A, stake: 1, currency: "USDC" });
+  assert.equal((await a.next("room")).escrowed, false);
+  a.send({ type: "leave" });
+
+  // Two players matched head to head; a third who pays for the full room is refunded
+  a.send({ type: "create", mode: "h2h", name: "A", wallet: WALLET_A, stake: 1, currency: "SOL", ...(await stake(a, WALLET_A, { stake: 1 })) });
+  const room = await a.next("room", m => m.escrowed);
+  const late = await stake(c, WALLET_B, { code: room.code });
+  b.send({ type: "join", code: room.code, name: "B", wallet: WALLET_B, ...(await stake(b, WALLET_B, { code: room.code })) });
+  await b.next("countdown");
+  c.send({ type: "join", code: room.code, name: "C", wallet: WALLET_B, ...late });
+  assert.match((await c.next("error")).message, /under way|two players/);
+  assert.equal((await c.next("refund")).lamports, SOL - FEE);
+
+  // Head-to-head rematch: paying is what casts your vote
+  await a.next("results", () => true, 5000);
+  await a.next("payout");
+  a.send({ type: "rematch" });
+  assert.match((await a.next("error")).message, /Pay your stake/);
+  a.send({ type: "pay", rematch: true, ...(await stake(a, WALLET_A, { room: true })) });
+  await b.next("room", m => m.rematch.length === 1);
+  b.send({ type: "leave" });                         // opponent walks away: the payer's stake comes back when they leave
+  await a.next("room", m => m.players.length === 1);
+  a.send({ type: "leave" });
+  assert.equal((await a.next("refund")).lamports, SOL - FEE);
+
+  [a, b, c].forEach(x => x.close());
+  await server.close();
+});
+
+test("the Solana library is served to the page", async () => {
+  const { server, port } = await startServer();
+  const res = await fetch(`http://localhost:${port}/vendor/web3.js`);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get("content-type"), /javascript/);
   server.close();
 });

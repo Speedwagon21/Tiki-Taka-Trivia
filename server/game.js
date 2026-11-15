@@ -95,6 +95,9 @@ class Room {
     this.mode = mode;                 // "group" | "h2h"
     this.matched = matched;           // h2h paired by matchmaking (private: no code to share)
     this.maxPlayers = mode === "h2h" ? 2 : this.opts.groupMax;
+    // Escrowed rooms move real SOL: every player has paid `lamports` on-chain before each match
+    this.escrowed = Boolean(manager.escrow) && currency === "SOL";
+    this.lamports = Math.round(stake * 1e9);
     this.players = [];
     this.hostId = null;
     this.phase = "lobby";             // lobby | countdown | question | reveal | results
@@ -123,7 +126,7 @@ class Room {
   player(id) { return this.players.find(p => p.id === id); }
   inMatch() { return ["countdown", "question", "reveal"].includes(this.phase); }
 
-  addPlayer({ key = null, name, wallet = null, send = null, recent = [] }) {
+  addPlayer({ key = null, name, wallet = null, send = null, recent = [], paid = 0 }) {
     this.lastActive = Date.now();
     // No two players in a room share a name, so nobody can pose as someone else
     const taken = n => this.active.some(o => o.name.toLowerCase() === n.toLowerCase());
@@ -131,7 +134,8 @@ class Room {
     const p = {
       id: randomFrom(BASE58, 10), key, name, wallet, send,
       connected: Boolean(send), left: false, score: 0, answer: null,
-      recent: new Set(recent), dropTimer: null
+      recent: new Set(recent), dropTimer: null,
+      paid                              // lamports this player has in escrow for the next match
     };
     this.players.push(p);
     if (!this.hostId) this.hostId = p.id;
@@ -144,6 +148,7 @@ class Room {
       p.left = true; p.connected = false; p.send = null;   // keeps their stake in this pot
     } else {
       this.players = this.players.filter(x => x !== p);
+      this.manager.refund(p);                               // no match running: they get their stake back
     }
     this.rematch.delete(p.id);
     if (p.key) this.manager.byKey.delete(p.key);
@@ -196,6 +201,7 @@ class Room {
       code: this.code,
       mode: this.mode,
       matched: this.matched,
+      escrowed: this.escrowed,
       phase: this.phase,
       you: forPlayer.id,
       hostId: this.hostId,
@@ -207,7 +213,7 @@ class Room {
       rematch: [...this.rematch],
       players: this.active.map(p => ({
         id: p.id, name: p.name, wallet: short(p.wallet),
-        connected: p.connected, score: p.score, isHost: p.id === this.hostId
+        connected: p.connected, score: p.score, isHost: p.id === this.hostId, paid: p.paid > 0
       }))
     };
   }
@@ -222,6 +228,7 @@ class Room {
     if (this.inMatch()) return "The match has already started.";
     if (this.active.length < 2) return "You need at least one other player to start.";
     if (this.active.some(p => !p.connected)) return "Wait for everyone to reconnect first.";
+    if (this.escrowed && this.active.some(p => !p.paid)) return "Waiting for everyone to pay their stake for this match.";
     this.begin();
     return null;
   }
@@ -231,6 +238,7 @@ class Room {
     if (this.mode === "group") return this.start(by);
     if (this.phase !== "results") return "The match isn't over yet.";
     if (this.active.length < 2) return "Your opponent has left.";
+    if (this.escrowed && !by.paid) return "Pay your stake for the rematch first.";
     this.rematch.add(by.id);
     if (this.active.every(p => this.rematch.has(p.id))) this.begin();
     else this.syncState();
@@ -344,17 +352,39 @@ class Room {
       mode: this.mode,
       stake: this.stake,
       currency: this.currency,
-      tx: fakeTxHash(),
+      escrowed: this.escrowed,
+      tx: this.escrowed ? null : fakeTxHash(),          // escrowed rooms get the real signature once paid
       ...result
     };
+    if (this.escrowed) this.payOut(result);
     this.players = this.active;
     this.syncState();
     this.broadcast(this.lastResults);
   }
+
+  /* Sends the pot on-chain: to the winners, or back to everyone on a draw. One transaction, fee taken from the pot. */
+  payOut(result) {
+    const escrow = this.manager.escrow, results = this.lastResults;
+    const pot = this.players.reduce((sum, p) => sum + p.paid, 0);
+    const to = result.outcome === "refund" ? this.players : this.players.filter(p => result.winnerIds.includes(p.id));
+    const each = Math.floor((pot - escrow.fee) / to.length);
+    const transfers = to.map(p => ({ to: p.wallet, lamports: each }));
+    this.players.forEach(p => { p.paid = 0; });
+    escrow.pay(transfers).then(tx => {
+      results.tx = tx;
+      this.broadcast({ type: "payout", tx });
+    }, err => {
+      // shortcut: a failed payout is only logged, so it has to be re-sent by hand from this line
+      console.error("PAYOUT FAILED", JSON.stringify(transfers), err);
+      results.payoutFailed = true;
+      this.broadcast({ type: "payout", failed: true });
+    });
+  }
 }
 
 class RoomManager {
-  constructor(opts = {}) {
+  constructor(opts = {}, escrow = null) {
+    this.escrow = escrow;
     this.opts = { ...DEFAULTS, ...opts };
     this.rooms = new Map();
     this.byKey = new Map();           // client key -> { room, player }
@@ -430,7 +460,21 @@ class RoomManager {
     return { room };
   }
 
-  cancelSearch(key) { return this.queue.delete(key); }
+  cancelSearch(key) {
+    const entry = this.queue.get(key);
+    if (entry) this.refund(entry.who);
+    return this.queue.delete(key);
+  }
+
+  /* Returns a held stake, less the network fee. Works for a seated player or someone waiting in the queue. */
+  refund(who) {
+    if (!this.escrow || !who.paid) return;
+    const lamports = who.paid - this.escrow.fee, send = who.send;
+    who.paid = 0;
+    this.escrow.pay([{ to: who.wallet, lamports }]).then(
+      tx => send && send({ type: "refund", tx, lamports }),
+      err => console.error("REFUND FAILED", who.wallet, lamports, err));
+  }
 
   lookup(code) {
     const room = this.rooms.get(typeof code === "string" ? code.toUpperCase() : "");
@@ -438,6 +482,7 @@ class RoomManager {
     const host = room.player(room.hostId);
     return {
       code: room.code, mode: room.mode, stake: room.stake, currency: room.currency, phase: room.phase,
+      escrowed: room.escrowed, lamports: room.lamports,
       players: room.active.length, maxPlayers: room.maxPlayers, host: host ? host.name : null
     };
   }
@@ -463,12 +508,13 @@ class RoomManager {
     room.players.forEach(p => {
       if (p.dropTimer) clearTimeout(p.dropTimer);
       if (p.key && this.byKey.get(p.key)?.room === room) this.byKey.delete(p.key);
+      this.refund(p);                                       // anything still held goes back
       if (p.send) p.send({ type: "closed" });
     });
     this.rooms.delete(room.code);
   }
 
-  shutdown() { clearInterval(this.sweeper); [...this.rooms.values()].forEach(r => this.close(r)); this.queue.clear(); }
+  shutdown() { clearInterval(this.sweeper); [...this.rooms.values()].forEach(r => this.close(r)); [...this.queue.keys()].forEach(k => this.cancelSearch(k)); }
 }
 
 module.exports = { RoomManager, Room, buildRound, scoreAnswer, settle, shuffle, DEFAULTS };
