@@ -1,5 +1,6 @@
 /* HTTP server for the static front end plus a WebSocket endpoint at /ws for rooms. */
 const http = require("http");
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { WebSocketServer, WebSocket } = require("ws");
@@ -24,11 +25,15 @@ const BASE_HEADERS = {
 const headersFor = (req, rpc = "https://api.devnet.solana.com") => ({
   ...BASE_HEADERS,
   "Content-Security-Policy": [
-    "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'", "img-src 'self' data:",
+    "default-src 'self'", `script-src 'self' ${INLINE_SCRIPTS}`, "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com", "img-src 'self' data: blob:", "worker-src 'self' blob:",
     `connect-src 'self' wss://${req.headers.host} ws://${req.headers.host} ${new URL(rpc).origin}`,
     "object-src 'none'", "base-uri 'none'", "frame-ancestors 'none'"
   ].join("; ")
 });
+/* The landing page's two one-line head scripts (they must run before first paint) are allowed by hash, nothing else inline */
+const INLINE_SCRIPTS = (fs.readFileSync(path.join(__dirname, "..", "public", "index.html"), "utf8").match(/<script>([\s\S]*?)<\/script>/g) || [])
+  .map(tag => `'sha256-${crypto.createHash("sha256").update(tag.slice(8, -9)).digest("base64")}'`).join(" ");
 const LIMITS = { perIp: 20, total: 5000, lookupsPerMin: 30, msgsPerSec: 20 };
 
 /* ----- input cleaning: everything from a client is untrusted ----- */
@@ -57,6 +62,11 @@ function serveStatic(req, res, rpc) {
   }
   let rel;
   try { rel = decodeURIComponent(url.pathname); } catch { rel = "/"; }
+  // The game lives at /play/. Old invite links (/?room=CODE) and /play without the slash still land there.
+  if (rel === "/play" || (rel === "/" && url.searchParams.has("room"))) {
+    res.writeHead(302, { Location: "/play/" + url.search, ...SECURITY_HEADERS });
+    return res.end();
+  }
   if (rel.endsWith("/")) rel += "index.html";
   // The Solana library the page needs to build a stake payment, served from our own origin
   const file = rel === "/vendor/web3.js" ? WEB3_BUNDLE : path.normalize(path.join(PUBLIC_DIR, rel));
@@ -277,6 +287,7 @@ function createServer(gameOpts = {}, limits = {}, escrow = null) {
     wss.clients.forEach(ws => ws.terminate());
     wss.close();
     server.close(() => resolve());
+    server.closeAllConnections();          // a half-read download must not hold the shutdown open
   }).then(() => escrow && escrow.idle());   // let refunds for anything still held go out
   return { server, wss, manager, stop };
 }

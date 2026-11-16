@@ -2,11 +2,12 @@
   "name": "Tiki-Taka Trivia",
   "short_name": "Tiki-Taka",
   "description": "Live football trivia. Play a group room with friends, or go head to head for the pot.",
-  "start_url": "/",
+  "start_url": "/play/",
+  "scope": "/play/",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#07110c",
-  "theme_color": "#07110c",
+  "background_color": "#0c0a08",
+  "theme_color": "#0c0a08",
   "icons": [
     { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
     { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }

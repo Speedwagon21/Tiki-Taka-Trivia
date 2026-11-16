@@ -49,7 +49,9 @@ server/index.js      HTTP static server + WebSocket endpoint at /ws
 server/game.js       rooms, matchmaking, rounds, scoring, payouts
 server/escrow.js     on-chain stake payments, payouts and refunds
 server/questions.js  question bank (server-only)
-public/              the front end (index.html, script.js, style.css)
+public/index.html    the landing page (built with the design-taste-frontend skill)
+public/play/         the game itself (index.html, script.js, style.css), at /play/
+public/assets/       the landing page's design kit (MIT, see LICENSE-tasteskill.txt), photos and game captures
 test/                node:test suites
 render.yaml          one-click deploy on Render
 ```

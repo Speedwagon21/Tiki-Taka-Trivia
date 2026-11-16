@@ -890,7 +890,7 @@ $("newOppBtn").onclick = () => {
 function confetti() {
   if (prefersReducedMotion) return;
   const box = $("confetti");
-  const colors = ["#2dff8a", "#ffd166", "#ff5d6c", "#7cc6ff", "#e8f3ec"];
+  const colors = ["#c9a45a", "#f0d9a4", "#ffffff", "#6fd39a", "#8f8a84"];
   box.replaceChildren(...Array.from({ length: 40 }, () => {
     const s = el("i");
     s.style.left = Math.random() * 100 + "%";
@@ -916,7 +916,7 @@ const fmt4 = n => (Math.round(n * 1e4) / 1e4).toLocaleString(undefined, { maximu
 let web3Loading = null;       // the Solana library is big, so it only loads when a payment needs it
 const loadWeb3 = () => web3Loading || (web3Loading = new Promise((resolve, reject) => {
   document.head.append(el("script", {
-    src: "vendor/web3.js", onload: resolve,
+    src: "/vendor/web3.js", onload: resolve,
     onerror: () => { web3Loading = null; reject(new Error("Couldn't load the Solana library. Check your connection and try again.")); }
   }));
 }));
@@ -1111,6 +1111,7 @@ $("walletBtn").onclick = () => {
     codeInput.value = app.pendingCode;
     history.replaceState(null, "", location.pathname);   // a refresh shouldn't re-run the invite
   }
+  if (location.hash === "#terms") show("terms");      // the landing page links straight to the terms
   renderWallet();
   renderJoin();
   connect();

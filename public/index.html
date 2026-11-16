@@ -1,254 +1,203 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html lang="en" data-type="software" data-radius="soft" data-buttons="solid" data-motion>
 <head>
-<meta charset="UTF-8">
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#07110c">
-<meta name="description" content="Live football trivia. Play a group room with friends, or go head to head for the pot.">
-<title>Tiki-Taka Trivia</title>
+<title>Tiki-Taka Trivia: a live football quiz for friends and rivals</title>
+<meta name="description" content="Three football questions, ten seconds each. Play a room of up to eight friends or one opponent, and the top score takes the pot.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Tiki-Taka Trivia: a live football quiz for friends and rivals">
+<meta property="og:description" content="Three questions from easy to hard. Up to eight players, or one opponent for the pot.">
+<meta property="og:image" content="share.jpg">
+<meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
-<link rel="manifest" href="manifest.webmanifest">
-<link rel="apple-touch-icon" href="icon-180.png">
-<meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Tiki-Taka">
-<link rel="stylesheet" href="style.css">
+<link rel="manifest" href="play/manifest.webmanifest">
+<meta name="theme-color" content="#0c0a08">
+<!-- <link rel="canonical" href="https://[the client's domain]/"> : the domain is still to come -->
+<meta name="site-kind" content="gaming">
+<meta name="page-type" content="software">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..600&family=Martian+Mono:wght@400..500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/system.css">
+<link rel="stylesheet" href="assets/ui/cards.css">
+<link rel="stylesheet" href="assets/motion/motion.css">
+<link rel="stylesheet" href="assets/backgrounds/backgrounds.css">
+<link rel="stylesheet" href="assets/layout/layout.css">
+<link rel="stylesheet" href="assets/icons/icon.css">
+<style>
+:root {
+  --p-bg: #0c0a08; --p-surface: #181512; --p-ink: #ffffff; --p-muted: #8f8a84;
+  --p-accent: #c9a45a; --p-accent-ink: #0c0a08; --p-action: #c9a45a; --p-action-ink: #0c0a08;
+  --p-inv-bg: #ffffff; --p-inv-surface: #ebebeb; --p-inv-ink: #0c0a08; --p-inv-muted: #5c5b59;
+  --p-inv-accent: #0c0a08; --p-inv-accent-ink: #ffffff; --p-inv-action: #0c0a08; --p-inv-action-ink: #ffffff;
+  --font-display: "Archivo", system-ui, sans-serif;
+  --font-text: "Archivo", system-ui, sans-serif;
+  --font-mono: "Martian Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --display-weight: 500;
+  --display-tracking: -0.025em;
+  --display-tracking-xl: -0.035em;
+  --display-stretch: 110%;
+  --ly-scale: 0.9;
+}
+</style>
+<script>document.documentElement.classList.add('m-enter');setTimeout(()=>document.documentElement.classList.add('m-enter-done'),700)</script>
+<script src="assets/backgrounds/backgrounds.js"></script>
+<script>document.documentElement.classList.add('mo-js');setTimeout(()=>document.documentElement.classList.add('mo-safe'),2500)</script>
+<link rel="modulepreload" href="assets/moments/moments.js">
+<link rel="modulepreload" href="assets/moments/lib.js">
+<link rel="modulepreload" href="assets/moments/word-highlight/moment.js">
+<!-- page CSS: the captures' frames only -->
+<style>
+  .shot { --p-h: 236px; }
+  #modes .shot { --p-h: 340px; }
+  .shot .frame__img { object-fit: cover; object-position: 50% 0; }
+  @media (max-width: 639px) { .shot, #modes .shot { --p-h: 190px; } }
+  /* the tablet stacks the three captures: two screens there; the two mode cards stand taller to fill theirs */
+  @media (min-width: 640px) and (max-width: 1279px) { #match { --h: 2 } }
+  @media (min-width: 640px) and (max-width: 1023px) { #modes .shot { --p-h: 400px; } }
+  @media (min-width: 1024px) and (max-width: 1279px) { #modes .shot { --p-h: 280px; } }
+</style>
 </head>
 <body>
-<a class="skip" href="#main">Skip to content</a>
+<!-- type: software (site-kind gaming)
+     deal: hero photo (setting stand-in: a floodlit stadium), nav nav-centre, close close-word, footer footer-dark (dealt footer-statement: its lit sky ground
+           recoloured the main button, so one action showed in two looks), rhythm dark-band, buttons solid, mark wordmark, palette warm-black-gold, type archivo
+     moments: word-highlight (#questions statement)
+     The game's own art is its screens: the four captures are real, taken from the running game. -->
 
-<header>
-  <h1>Tiki-Taka <span>Trivia</span></h1>
-  <div class="head-actions">
-    <span class="net" id="netStatus" role="status" title="Server connection"><i></i><span>Connecting…</span></span>
-    <button class="icon-btn" id="muteBtn" aria-pressed="false" aria-label="Mute sounds" title="Sound on/off">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path class="spk" d="M4 9v6h4l5 4V5L8 9H4z"/><path class="wave" d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12"/><path class="cross" d="M16 9l6 6M22 9l-6 6"/></svg>
+<header class="nav nav--centre">
+  <div class="wrap nav__bar">
+    <a class="skip-link" href="#top">Skip to content</a>
+    <a class="nav__logo" href="#top">Tiki-Taka</a>
+    <nav class="nav__links" aria-label="Main">
+      <div class="nav__item"><a class="nav__link" href="#match">Match</a></div>
+      <div class="nav__item"><a class="nav__link" href="#modes">Modes</a></div>
+      <div class="nav__item"><a class="nav__link" href="#faq">Questions</a></div>
+    </nav>
+    <div class="nav__actions">
+      <a class="btn btn--primary" href="play/">Start a match</a>
+    </div>
+    <button class="nav__toggle" type="button" aria-expanded="false" aria-label="Menu">
+      <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true"><path d="M2 5h14M2 13h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
     </button>
-    <button class="btn" id="walletBtn">Connect wallet</button>
   </div>
 </header>
 
-<main id="main">
-  <!-- Screen 1: Home: pick a mode, or join with a code -->
-  <section class="screen active panel" id="home" aria-labelledby="homeTitle">
-    <h2 id="homeTitle" tabindex="-1">Pick your game</h2>
-    <p class="sub">Three questions from Easy to Hard. Faster right answers score more, and the top score takes the pot.</p>
+<main id="top">
+  <!-- CLIENT FILE key-art: assets/client/key-art.jpg (2560x1600); stand-in: a floodlit stadium from Wikimedia Commons -->
+  <section class="hero hero--photo" data-enter data-calm="left" aria-labelledby="hero-h">
+    <img class="hero__bg" src="assets/img/photo-f19004658.webp" width="1280" height="853" alt="A full football stadium under floodlights at dusk" style="--ly-pos: 62% 40%; --ly-pos-phone: 70% 50%" fetchpriority="high" data-source="stand-in" data-subject="a floodlit football stadium">
+    <div class="wrap"><div class="hero-text">
+      <div class="hero__text">
+        <h1 id="hero-h">Tiki-Taka, a live football quiz</h1>
+        <p class="hero__lead">3 questions from easy to hard, 10 seconds each, and a faster right answer scores more. Play a room of up to 8 friends or one opponent; the top score takes the pot.</p>
+        <div class="btn-row"><a class="btn btn--primary" href="play/">Start a match</a><a class="btn btn--secondary" href="#match">See a match</a></div>
+      </div>
+    </div></div>
+  </section>
 
-    <label class="field">
-      <span>Your name</span>
-      <input type="text" id="nameInput" maxlength="20" autocomplete="nickname" placeholder="e.g. Pirlo's Beard">
-    </label>
-
-    <div class="tabs" role="tablist" aria-label="Game mode">
-      <button role="tab" id="tab-group" aria-controls="modePane" aria-selected="true">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><circle cx="17" cy="9.5" r="2.5"/><path d="M3 19c.6-3.3 3-5 6-5s5.4 1.7 6 5M15 14.6c2.6-.4 5 1 5.6 4.4"/></svg>
-        Group
-      </button>
-      <button role="tab" id="tab-h2h" aria-controls="modePane" aria-selected="false" tabindex="-1">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6.5" cy="8" r="2.8"/><circle cx="17.5" cy="8" r="2.8"/><path d="M2 19c.4-3 2.2-4.6 4.5-4.6S10.6 16 11 19M13 19c.4-3 2.2-4.6 4.5-4.6S21.6 16 22 19M12 5v6"/></svg>
-        Head to Head
-      </button>
+  <section class="section" id="match" aria-labelledby="match-h">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="match-h">A match is three questions. <span class="muted">Easy, medium, then hard.</span></h2>
+      </div>
+      <div class="grid">
+        <article class="card card--row card--open span-4">
+          <h3>The 10-second clock</h3>
+          <p>Four answers and one clock. Tap one, or press 1 to 4 on a keyboard.</p>
+          <div class="panel shot"><img class="frame__img" src="assets/client/shot-question.jpg" width="1600" height="900" alt="A medium question about Leicester City, the clock half run, four answers" loading="lazy" data-source="client" data-subject="the game's question screen"></div>
+        </article>
+        <article class="card card--row card--open span-4">
+          <h3>The game marks the right answer</h3>
+          <p>The right answer lights up with your points and how many players picked each one.</p>
+          <div class="panel shot"><img class="frame__img" src="assets/client/shot-reveal.jpg" width="1600" height="900" alt="The right answer marked in green, plus 820 points, four players' scores" loading="lazy" data-source="client" data-subject="the game's reveal screen"></div>
+        </article>
+        <article class="card card--row card--open span-4">
+          <h3>The pot pays out after 3 questions</h3>
+          <p>The top score wins it. A shared top score splits it, and a dead heat refunds everyone.</p>
+          <div class="panel shot"><img class="frame__img" src="assets/client/shot-results.jpg" width="1600" height="900" alt="The results screen: You win, the standings and the payout" loading="lazy" data-source="client" data-subject="the game's results screen"></div>
+        </article>
+      </div>
     </div>
+  </section>
 
-    <div class="pane" role="tabpanel" id="modePane" aria-labelledby="tab-group">
-      <p class="mode-blurb" id="modeBlurb"></p>
-      <label class="field"><span>Stake per player</span></label>
-      <div class="row">
-        <input type="number" id="stake" min="0.01" max="1000" step="0.01" placeholder="0.00" inputmode="decimal" aria-label="Stake per player">
-        <div class="seg" role="radiogroup" aria-label="Currency">
-          <button role="radio" aria-checked="true" class="on" data-cur="SOL">SOL</button>
-          <button role="radio" aria-checked="false" data-cur="USDC">USDC</button>
+  <section class="section statement" id="questions" data-moment="word-highlight" aria-label="The questions">
+    <div class="wrap">
+      <p class="t-label">The questions</p>
+      <p class="mo-wh__text">Each match draws one question from each tier of a 48-question bank, skips the ones you saw last time, and keeps every answer on the server until <strong>the clock</strong> runs out.</p>
+    </div>
+  </section>
+
+  <section class="section ground-inverse" id="modes" aria-labelledby="modes-h">
+    <div class="wrap">
+      <div class="section-head">
+        <h2 id="modes-h">Group rooms and head to head</h2>
+        <p>Both play the same three questions. Stakes are in SOL or USDC.</p>
+      </div>
+      <div class="grid">
+        <article class="card card--row card--open span-6">
+          <h3>Group rooms for up to 8</h3>
+          <p>Create a room, send the five-letter code or the link, and start when everyone is in.</p>
+          <div class="panel shot"><img class="frame__img" src="assets/client/shot-room.jpg" width="1600" height="900" alt="A group room with code TH69G, four players and a 20 USDC pot" loading="lazy" data-source="client" data-subject="the game's group room"></div>
+        </article>
+        <article class="card card--row card--open span-6">
+          <h3>Head-to-head games for 2</h3>
+          <p>Get matched with a player at the same stake, or send a challenge link to a friend.</p>
+          <div class="panel shot"><img class="frame__img" src="assets/client/shot-search.jpg" width="1600" height="900" alt="The search screen finding a head-to-head opponent for 2 USDC each" loading="lazy" data-source="client" data-subject="the game's matchmaking screen"></div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="faq" aria-labelledby="faq-h">
+    <div class="wrap">
+      <div class="grid grid--top">
+        <div class="span-5 stack-4">
+          <h2 id="faq-h">Questions</h2>
+          <p class="muted">What players ask before their first match.</p>
+          <div class="frame frame--photo" style="aspect-ratio: 3 / 2"><img class="frame__img" src="assets/img/photo-f62351696-960.webp" srcset="assets/img/photo-f62351696-500.webp 500w, assets/img/photo-f62351696-960.webp 960w, assets/img/photo-f62351696.webp 1280w" sizes="(max-width: 639px) 100vw, 40vw" width="1280" height="848" alt="A goalkeeper seen through the goal net" loading="lazy" decoding="async" data-source="stand-in" data-subject="a goalkeeper behind the net"></div>
+        </div>
+        <div class="faq span-7 start-6">
+          <div class="faq__item"><h3>Is the game played for real money?</h3><p>Not yet. Stakes go through a simulated escrow, or test SOL on Solana devnet, which has no value.</p></div>
+          <div class="faq__item"><h3>Wallets for the game</h3><p>Phantom. Without it you can still play with a demo wallet.</p></div>
+          <div class="faq__item"><h3>Points: 500 to 1,000 a question</h3><p>A right answer scores 500 points plus up to 500 more for speed. A wrong or missed answer scores nothing.</p></div>
+          <div class="faq__item"><h3>Leaving a game early</h3><p>Refresh and you keep your seat. Leave and your stake stays in the pot.</p></div>
+          <div class="faq__item"><h3>Who can play the game</h3><p>Players 18 or older, where staking is lawful.</p></div>
         </div>
       </div>
-      <div class="escrow" id="escrowNote"></div>
-      <label class="consent">
-        <input type="checkbox" class="agree" id="agreeCreate">
-        <span>I am 18 or older (or the legal age where I live), staking is lawful where I am, and I accept the
-        <a href="#terms" data-open-terms>terms and conditions</a>.</span>
-      </label>
-      <div class="mode-actions" data-mode="group">
-        <button class="btn solid wide" id="createBtn">Create group room</button>
-      </div>
-      <div class="mode-actions" data-mode="h2h" hidden>
-        <button class="btn solid wide" id="findBtn">Find an opponent</button>
-        <button class="btn wide" id="challengeBtn">Challenge a friend</button>
-      </div>
     </div>
-
-    <p class="msg" id="homeMsg" role="alert"></p>
-
-    <!-- Join with a code (works for group rooms and head-to-head challenges) -->
-    <div class="join-box">
-      <h3 class="list-title">Got a code?</h3>
-      <div class="join-row">
-        <input type="text" id="codeInput" class="code-input" maxlength="5" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCDE" aria-label="Room code" aria-describedby="codeHelp">
-        <button class="btn" id="joinBtn" disabled>Find</button>
-      </div>
-      <p class="hint" id="codeHelp">Enter the 5-character code a friend sent you, or just open their invite link.</p>
-      <div class="preview" id="joinPreview" hidden aria-live="polite"></div>
-      <label class="consent" id="joinConsent" hidden>
-        <input type="checkbox" class="agree" id="agreeJoin">
-        <span>I am 18 or older (or the legal age where I live), staking is lawful where I am, and I accept the
-        <a href="#terms" data-open-terms>terms and conditions</a>.</span>
-      </label>
-      <button class="btn solid wide" id="joinConfirmBtn" hidden>Join</button>
-      <p class="msg" id="joinMsg" role="alert"></p>
-    </div>
-  </section>
-
-  <!-- Screen 1b: Matchmaking (head to head with a random opponent) -->
-  <section class="screen panel" id="search" aria-labelledby="searchTitle">
-    <div class="radar" aria-hidden="true"><i></i><i></i><i></i><span>VS</span></div>
-    <h2 id="searchTitle" tabindex="-1" class="center">Finding an opponent…</h2>
-    <p class="sub center" id="searchSub"></p>
-    <p class="search-time center" id="searchTime" aria-live="off">0:00</p>
-    <p class="hint center" id="searchHint"></p>
-    <button class="btn wide" id="cancelSearchBtn">Cancel</button>
-  </section>
-
-  <!-- Screen 2: Room (waiting for players) -->
-  <section class="screen panel" id="room" aria-labelledby="roomTitle">
-    <div class="room-head">
-      <h2 id="roomTitle" tabindex="-1">Room</h2>
-      <button class="btn ghost small" id="leaveRoomBtn">Leave</button>
-    </div>
-    <p class="sub tight" id="roomSub">Send this code to your friends so they can join.</p>
-    <div class="code-box" id="roomCode" aria-label="Room code"></div>
-    <div class="share-row">
-      <button class="btn small" id="copyCodeBtn">Copy code</button>
-      <button class="btn small" id="copyLinkBtn">Copy invite link</button>
-      <button class="btn small" id="shareBtn" hidden>Share…</button>
-    </div>
-    <div class="stake-strip" id="roomStake"></div>
-    <h3 class="list-title">Players <span id="playerCount"></span></h3>
-    <ul class="players" id="playerList"></ul>
-    <button class="btn solid wide" id="startBtn">Start match</button>
-    <p class="hint center" id="roomHint"></p>
-    <p class="msg" id="roomMsg" role="alert"></p>
-  </section>
-
-  <!-- Screen 3: Game arena -->
-  <section class="screen panel" id="arena" aria-label="Match">
-    <div class="countdown" id="countdown" hidden aria-live="assertive"><span id="countdownNum">3</span><small>Get ready</small></div>
-    <div class="hud">
-      <div class="counter" id="counter">Question 1 of 3</div>
-      <div class="pot"><small>Total pot</small><strong id="pot">0</strong><small id="potCur">SOL</small></div>
-      <div class="score"><small>Your score</small><strong id="myScore">0</strong><small id="myRank"></small></div>
-    </div>
-    <div class="timer-row">
-      <div class="timer" id="timer" role="progressbar" aria-label="Time left" aria-valuemin="0" aria-valuemax="10" aria-valuenow="10"><i id="timerBar"></i></div>
-      <span class="secs" id="secs" aria-hidden="true">10</span>
-    </div>
-    <div class="tier-row">
-      <span class="badge easy" id="badge"><span class="pips" id="pips" aria-hidden="true"><i></i><i></i><i></i></span><span id="badgeText">Easy</span></span>
-    </div>
-    <h2 class="q" id="question" tabindex="-1"></h2>
-    <div class="answers" id="answers" role="group" aria-label="Answers"></div>
-    <p class="feedback" id="feedback" aria-live="polite"></p>
-    <ul class="chips" id="chips" aria-label="Players"></ul>
-    <p class="hint center keys">Tip: press 1–4 to answer.</p>
-  </section>
-
-  <!-- Screen 4: Results -->
-  <section class="screen panel" id="results" aria-labelledby="resTitle">
-    <div class="confetti" id="confetti" aria-hidden="true"></div>
-    <p class="sub tight" id="resSub"></p>
-    <h2 class="final" id="resTitle" tabindex="-1"></h2>
-    <p id="resText" class="sub"></p>
-    <ol class="standings" id="standings"></ol>
-    <div class="ledger" id="ledger"></div>
-    <div class="result-actions">
-      <button class="btn solid" id="againBtn">Rematch</button>
-      <button class="btn" id="newOppBtn" hidden>New opponent</button>
-      <button class="btn" id="resLeaveBtn">Leave room</button>
-    </div>
-    <p class="hint" id="resHint"></p>
-    <p class="msg" id="resMsg" role="alert"></p>
-  </section>
-
-  <!-- Screen 5: Terms and conditions -->
-  <section class="screen panel terms" id="terms" aria-labelledby="termsTitle">
-    <button class="btn back" id="termsBack">Back</button>
-    <h2 id="termsTitle" tabindex="-1">Terms and conditions</h2>
-    <p class="sub" style="margin-bottom:0">Last updated 5 November 2026</p>
-    <div class="draft">Prototype draft. This is placeholder text with bracketed blanks, not legal advice. Real-money gaming is licensed and restricted in many places, so have a qualified lawyer review and complete it before launch.</div>
-
-    <h3>1. About these terms</h3>
-    <p>Tiki-Taka Trivia (the "Service") is operated by [Company name and registration number] ("we", "us"). By connecting a wallet or locking a stake you agree to these terms, our privacy notice and any rules shown on the match screens. If you do not agree, do not use the Service.</p>
-
-    <h3>2. Eligibility</h3>
-    <ul>
-      <li>You must be at least 18, or the legal gambling age where you live if that is higher.</li>
-      <li>You must have legal capacity to enter a binding contract and use only a wallet you control.</li>
-      <li>You must not use the Service from a restricted territory: [list of excluded countries and regions]. Using a VPN to get around this is prohibited.</li>
-      <li>One person may hold one account. We may ask you to verify your age, identity and location at any time.</li>
-    </ul>
-
-    <h3>3. Your wallet</h3>
-    <p>You connect a third-party wallet such as Phantom. You are solely responsible for your wallet, keys and recovery phrase. We never ask for them and cannot recover lost funds or reverse a transaction you signed.</p>
-
-    <h3>4. Game modes and how a match works</h3>
-    <p>There are two modes. In Group mode, a player creates a room, sets the stake and shares the room code or link; between 2 and 8 players can take part, and the room creator starts the match. In Head to Head mode, exactly two players compete: either we pair you with another player who chose the same stake and currency, or you send a challenge link to a specific person. A head-to-head match starts automatically once both players are in.</p>
-    <p>Each match is three questions, one each at Easy, Medium and Hard difficulty, with a 10-second limit per question. A correct answer scores 500 points plus up to 500 more for speed. A wrong answer, or a question left unanswered when time runs out, scores zero. The highest total wins. Outcomes depend on skill and knowledge, but you may lose your stake, and winning is never guaranteed.</p>
-
-    <h3>5. Stakes, escrow and payouts</h3>
-    <ul>
-      <li>Every player in a room locks the same stake. When you lock a stake, it is transferred to an escrow smart contract and cannot be withdrawn until the match settles.</li>
-      <li>The pot is all players' stakes. The player with the highest score receives the pot, less any platform fee of [fee %] disclosed before you lock your stake.</li>
-      <li>If two or more players share the highest score, they split the pot equally. If every player finishes level, each player's stake is refunded in full.</li>
-      <li>If you leave or disconnect during a match, your stake stays in the pot and you score nothing for the questions you miss.</li>
-      <li>Blockchain transactions are final. Network fees are paid by you, and settlement times depend on the network.</li>
-      <li>Winnings may be withheld while we complete verification or investigate a suspected breach of these terms.</li>
-    </ul>
-
-    <h3>6. Fair play</h3>
-    <p>You must not use bots, scripts, search engines, other people or any outside help during a match. You must not collude with other players, create multiple accounts, exploit bugs, or manipulate the outcome in any way. If we find a breach, we may void the match, withhold winnings, close your account and report the matter to the authorities where required.</p>
-
-    <h3>7. Voided matches and disputes</h3>
-    <p>If a match cannot finish because of a technical fault, a disconnect on our side, an error in a question or answer, or a suspected breach of the rules, we may void it, and escrowed stakes will be returned to every player. To dispute a result, contact us within [14] days with your wallet address and the transaction reference. Our decision after review is final, subject to your legal rights.</p>
-
-    <h3>8. Responsible play</h3>
-    <p>Only stake money you can afford to lose. Staking is not a way to make money or solve financial problems. Set yourself a limit before you play, take regular breaks, and never chase losses. You can ask us to close your account or exclude you for a period at [contact email]. If gambling is causing you harm, contact a free local problem-gambling helpline or support service.</p>
-
-    <h3>9. Verification and financial crime</h3>
-    <p>We may be legally required to verify who you are, where your funds come from, and to screen wallets against sanctions lists. We may refuse or suspend service, freeze payouts and share information with regulators and law enforcement to meet these duties.</p>
-
-    <h3>10. Risks</h3>
-    <p>Crypto-assets such as SOL can change sharply in value. USDC and other stablecoins can lose their peg. Smart contracts and blockchains can contain bugs or be attacked, and wallet software can fail. You accept these risks when you use the Service.</p>
-
-    <h3>11. Our liability</h3>
-    <p>The Service is provided "as is" and "as available." To the extent the law allows, we are not liable for lost stakes, lost winnings, network failures, wallet or third-party faults, or indirect losses. Nothing in these terms limits liability that cannot be excluded by law.</p>
-
-    <h3>12. Privacy</h3>
-    <p>We process your wallet address, display name, match history, device and location data to run the Service, prevent fraud and meet legal duties, as described in our privacy notice [link]. Your display name and a shortened wallet address are shown to other players in your room. Blockchain transactions are public and cannot be deleted.</p>
-
-    <h3>13. Changes to these terms</h3>
-    <p>We may update these terms and will show the new date above. If you keep using the Service after a change, you accept the updated terms. Changes never affect a match that is already in progress.</p>
-
-    <h3>14. Governing law and contact</h3>
-    <p>These terms are governed by the laws of [jurisdiction], and its courts have jurisdiction, unless your local consumer law says otherwise. Questions and complaints: [contact email], [licence number and regulator, if licensed].</p>
   </section>
 </main>
 
-<footer class="site-footer" id="siteFooter">
-  <a href="#terms" data-open-terms>Terms and conditions</a>
-  <a href="#terms" data-open-terms>Responsible play</a>
-  <p>18+ only. Staking carries financial risk, so only stake what you can afford to lose.</p>
+<footer class="footer closing footer--dark" id="contact" aria-labelledby="close-h">
+  <div class="wrap">
+    <div class="closing__cta close--word">
+      <div class="section-head--split">
+        <div><h2 id="close-h">Start a match tonight</h2><p class="t-lead">Free to try with a demo wallet, on a phone or a laptop.</p></div>
+        <a class="btn btn--primary" href="play/">Start a match<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"/><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"/></svg></a>
+      </div>
+      <p class="close__word" aria-hidden="true">Tiki-Taka</p>
+    </div>
+    <div class="closing__links">
+      <div class="grid">
+        <div class="span-6 stack-4">
+          <p class="footer__lede">A live football quiz for groups and head-to-head rivals.</p>
+        </div>
+        <div class="span-3 footer__col"><h3>Game</h3><ul><li><a href="#match">Match</a></li><li><a href="#modes">Modes</a></li></ul></div>
+        <div class="span-3 footer__col"><h3>Help</h3><ul><li><a href="#faq">Questions</a></li><li><a href="play/#terms">Terms</a></li></ul></div>
+      </div>
+      <div class="footer__legal">
+        <span>&copy; 2026 Tiki-Taka Trivia &nbsp; <a href="play/#terms">Terms</a></span>
+        <div class="socials"></div>
+        <a class="credits" href="credits.html">Photographs via Wikimedia Commons</a>
+      </div>
+    </div>
+  </div>
 </footer>
 
-<!-- Wallet dialog: install/connect help, demo wallet, or connected details -->
-<dialog id="walletDialog" aria-labelledby="walletTitle">
-  <form method="dialog" class="dialog-body">
-    <h2 id="walletTitle">Wallet</h2>
-    <div id="walletBody"></div>
-    <div class="dialog-actions" id="walletActions"></div>
-  </form>
-</dialog>
-
-<div class="toast" id="toast" role="status" aria-live="polite"></div>
-<div class="sr-only" id="announcer" aria-live="polite"></div>
-
-<script src="script.js"></script>
+<script type="module" src="assets/system.js"></script>
+<script type="module" src="assets/motion/motion.js"></script>
+<script type="module" src="assets/layout/layout.js"></script>
 </body>
 </html>

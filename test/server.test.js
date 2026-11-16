@@ -55,9 +55,14 @@ test("static files and health check are served", async () => {
   assert.equal(home.status, 200);
   assert.match(await home.text(), /Tiki-Taka/);
   assert.equal((await fetch(`http://localhost:${port}/healthz`)).status, 200);
-  const manifest = await fetch(`http://localhost:${port}/manifest.webmanifest`);
+  const manifest = await fetch(`http://localhost:${port}/play/manifest.webmanifest`);
   assert.equal(manifest.headers.get("content-type"), "application/manifest+json");
-  for (const icon of (await manifest.json()).icons) assert.equal((await fetch(`http://localhost:${port}/${icon.src}`)).status, 200);
+  for (const icon of (await manifest.json()).icons) assert.equal((await fetch(`http://localhost:${port}/play/${icon.src}`)).status, 200);
+  // The game moved to /play/: old invite links still reach it with their code
+  const invite = await fetch(`http://localhost:${port}/?room=ABCDE`, { redirect: "manual" });
+  assert.equal(invite.status, 302);
+  assert.equal(invite.headers.get("location"), "/play/?room=ABCDE");
+  assert.equal((await fetch(`http://localhost:${port}/play/`)).status, 200);
   assert.equal((await fetch(`http://localhost:${port}/..%2fpackage.json`)).status, 403);
   assert.equal((await fetch(`http://localhost:${port}/nope.js`)).status, 404);
   server.close();
@@ -549,5 +554,6 @@ test("the Solana library is served to the page", async () => {
   const res = await fetch(`http://localhost:${port}/vendor/web3.js`);
   assert.equal(res.status, 200);
   assert.match(res.headers.get("content-type"), /javascript/);
+  await res.arrayBuffer();
   server.close();
 });

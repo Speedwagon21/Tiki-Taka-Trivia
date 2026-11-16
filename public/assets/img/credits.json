@@ -1,0 +1,65 @@
+{
+ "note": "Credits for the photographs in this folder: photos.mjs credits prints the footer block for the ones the pages use.",
+ "photos": [
+  {
+   "file": "photo-f19004658.webp",
+   "files": [
+    "photo-f19004658-500.webp",
+    "photo-f19004658-960.webp",
+    "photo-f19004658.webp"
+   ],
+   "id": "f19004658",
+   "alt": "Kashima Stadium 1",
+   "by": "Waka77",
+   "licence": "CC0",
+   "licenceUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+   "page": "https://commons.wikimedia.org/wiki/File:Kashima_Stadium_1.JPG",
+   "source": "Wikimedia Commons"
+  },
+  {
+   "file": "photo-f3709537.webp",
+   "files": [
+    "photo-f3709537-500.webp",
+    "photo-f3709537-960.webp",
+    "photo-f3709537.webp"
+   ],
+   "id": "f3709537",
+   "alt": "Windsor Park football stadium - Empty",
+   "by": "Fasach Nua at English Wikipedia",
+   "licence": "Public domain",
+   "licenceUrl": "https://creativecommons.org/publicdomain/mark/1.0/",
+   "page": "https://commons.wikimedia.org/wiki/File:Windsor_Park_football_stadium_-_Empty.JPG",
+   "source": "Wikimedia Commons"
+  },
+  {
+   "file": "photo-f2078753.webp",
+   "files": [
+    "photo-f2078753-500.webp",
+    "photo-f2078753-960.webp",
+    "photo-f2078753.webp"
+   ],
+   "id": "f2078753",
+   "alt": "Hoekvlag",
+   "by": "TVA",
+   "licence": "CC BY 2.5",
+   "licenceUrl": "https://creativecommons.org/licenses/by/2.5",
+   "page": "https://commons.wikimedia.org/wiki/File:Hoekvlag.jpg",
+   "source": "Wikimedia Commons"
+  },
+  {
+   "file": "photo-f62351696.webp",
+   "files": [
+    "photo-f62351696-500.webp",
+    "photo-f62351696-960.webp",
+    "photo-f62351696.webp"
+   ],
+   "id": "f62351696",
+   "alt": "Goalkeeper through the soccer goal net (Unsplash)",
+   "by": "Dan Gold danielcgold",
+   "licence": "CC0",
+   "licenceUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+   "page": "https://commons.wikimedia.org/wiki/File:Goalkeeper_through_the_soccer_goal_net_(Unsplash).jpg",
+   "source": "Wikimedia Commons"
+  }
+ ]
+}
