@@ -11,11 +11,16 @@ const CURRENCIES = ["GC", "SC"];
 const WELCOME = { GC: 10000, SC: 2 };
 const DAILY = { GC: 2000, SC: 1 };
 const SESSION_DAYS = 30;
-/* Gold Coin packs, paid in SOL through the escrow. The Sweeps Coins are a free bonus, not what is bought. */
+/* Gold Coin packs, paid in SOL through the escrow, cheapest first. The Sweeps Coins are a free bonus,
+   not what is bought, so they stay below the pack's price. */
 const PACKS = {
-  starter: { name: "Starter pack", gc: 10000, sc: 10, lamports: 0.05e9 },
-  pro: { name: "Pro pack", gc: 60000, sc: 55, lamports: 0.25e9 }
+  mini: { name: "Kick-off", gc: 5000, sc: 5, lamports: 0.025e9 },
+  starter: { name: "Starter", gc: 10000, sc: 10, lamports: 0.05e9 },
+  plus: { name: "Hat-trick", gc: 30000, sc: 30, lamports: 0.12e9, tag: "Most popular" },
+  pro: { name: "Pro", gc: 60000, sc: 55, lamports: 0.25e9 },
+  mega: { name: "Golden Boot", gc: 150000, sc: 140, lamports: 0.6e9, tag: "Best value" }
 };
+const FIRST_BONUS = 0.5;          // a player's first pack comes with 50% more Gold Coins
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS accounts (
@@ -149,8 +154,9 @@ async function createCoins(pool) {
       const r = await pool.query("SELECT id, username, gc, sc, last_daily FROM accounts WHERE id = $1", [id]);
       if (!r.rows.length) return null;
       const a = r.rows[0];
+      const bought = (await pool.query("SELECT COUNT(*) AS n FROM purchases WHERE account_id = $1", [id])).rows[0];
       const last = a.last_daily && (a.last_daily instanceof Date ? a.last_daily.toISOString() : String(a.last_daily)).slice(0, 10);
-      return { id: a.id, username: a.username, GC: Number(a.gc), SC: Number(a.sc), dailyReady: last !== today() };
+      return { id: a.id, username: a.username, GC: Number(a.gc), SC: Number(a.sc), dailyReady: last !== today(), firstPurchase: Number(bought.n) === 0 };
     },
 
     /* Free coins once per UTC day: the no-purchase way to get Sweeps Coins */
@@ -170,15 +176,27 @@ async function createCoins(pool) {
     async creditPack(id, packId, signature) {
       const pack = PACKS[packId];
       if (!pack) throw playerError("There is no such pack.");
-      await tx(async client => {
+      const extra = await tx(async client => {
+        // Locking the account makes two payments at once count as a first purchase only once
+        await client.query("SELECT id FROM accounts WHERE id = $1 FOR UPDATE", [id]);
+        const first = Number((await client.query("SELECT COUNT(*) AS n FROM purchases WHERE account_id = $1", [id])).rows[0].n) === 0;
         await unique(client.query(
           "INSERT INTO purchases (signature, account_id, pack) VALUES ($1, $2, $3)",
           [signature, id, packId]), "That payment has already been used.");
         await move(client, id, "GC", pack.gc, "purchase", signature);
         await move(client, id, "SC", pack.sc, "purchase-bonus", signature);
+        const bonus = first ? Math.round(pack.gc * FIRST_BONUS) : 0;
+        if (bonus) await move(client, id, "GC", bonus, "first-purchase-bonus", signature);
+        return bonus;
       });
       onChange(id);
-      return pack;
+      return { ...pack, extra };
+    },
+
+    /* The account's packs, newest first */
+    async purchases(id) {
+      const r = await pool.query("SELECT pack, signature, created_at FROM purchases WHERE account_id = $1 ORDER BY created_at DESC LIMIT 50", [id]);
+      return r.rows.map(p => ({ pack: p.pack, name: PACKS[p.pack] ? PACKS[p.pack].name : p.pack, signature: p.signature, at: new Date(p.created_at).toISOString() }));
     },
 
     /* Takes a stake. Returns false when the balance is too low. */
@@ -209,4 +227,4 @@ async function createCoins(pool) {
   return api;
 }
 
-module.exports = { createCoins, PACKS, WELCOME, DAILY };
+module.exports = { createCoins, PACKS, WELCOME, DAILY, FIRST_BONUS };

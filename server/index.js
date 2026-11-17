@@ -242,6 +242,9 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
           account = null;
           await coins.logout(msg.session);
           return send({ type: "account", account: null });
+        case "purchases":
+          if (!coins || !account) return;
+          return send({ type: "purchases", list: await coins.purchases(account) });
         case "claimDaily": {
           if (!coins || !account) return;
           try { await coins.claimDaily(account); return send({ type: "claimed" }); }
@@ -254,7 +257,11 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
           const d = await deposit(msg);
           if (!d) return;
           if (d.lamports < pack.lamports) return send({ type: "error", message: "That payment doesn't cover the pack.", about: "store" });
-          try { await coins.creditPack(account, msg.pack, msg.deposit.signature); return send({ type: "bought", pack: msg.pack }); }
+          try {
+            const got = await coins.creditPack(account, msg.pack, msg.deposit.signature);
+            send({ type: "bought", pack: msg.pack, gc: got.gc + got.extra, sc: got.sc });
+            return send({ type: "purchases", list: await coins.purchases(account) });
+          }
           catch (err) { if (!err.userMessage) throw err; return send({ type: "error", message: err.userMessage, about: "store" }); }
         }
         case "intent": {          // "what do I pay, and where?" before a SOL payment

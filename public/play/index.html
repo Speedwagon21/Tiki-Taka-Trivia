@@ -28,6 +28,7 @@
     <button class="icon-btn" id="muteBtn" aria-pressed="false" aria-label="Mute sounds" title="Sound on/off">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path class="spk" d="M4 9v6h4l5 4V5L8 9H4z"/><path class="wave" d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12"/><path class="cross" d="M16 9l6 6M22 9l-6 6"/></svg>
     </button>
+    <button class="btn" id="storeBtn" hidden>Store</button>
     <button class="btn" id="accountBtn" hidden>Sign in</button>
     <button class="btn" id="walletBtn">Connect wallet</button>
   </div>
@@ -171,6 +172,23 @@
     </div>
     <p class="hint" id="resHint"></p>
     <p class="msg" id="resMsg" role="alert"></p>
+  </section>
+
+  <!-- Coin store: Gold Coin packs, each with free Sweeps Coins -->
+  <section class="screen panel" id="store" aria-labelledby="storeTitle">
+    <div class="room-head">
+      <h2 id="storeTitle" tabindex="-1">Coin store</h2>
+      <button class="btn ghost small" id="storeBack">Back</button>
+    </div>
+    <p class="sub tight">Buy Gold Coins to play for fun. Every pack comes with free Sweeps Coins.</p>
+    <p class="first-banner" id="firstBanner" hidden>Your first pack comes with 50% more Gold Coins.</p>
+    <ul class="pack-grid" id="packGrid"></ul>
+    <p class="msg" id="storeMsg" role="alert"></p>
+    <p class="hint">Paid in test SOL on Solana devnet with Phantom. You are buying the Gold Coins; the Sweeps Coins are a free bonus. Gold Coins have no cash value and can't be refunded.</p>
+    <div id="historyBox" hidden>
+      <h3 class="list-title">Your purchases</h3>
+      <ul class="players" id="purchaseList"></ul>
+    </div>
   </section>
 
   <!-- Screen 5: Terms and conditions -->

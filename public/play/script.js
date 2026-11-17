@@ -221,10 +221,15 @@ function handle(m) {
       if (m.token) store.set("tt-session", m.token);
       app.account = m.account;
       renderCoins();
-      if (m.token) { $("accountDialog").close(); toast(`Signed in as ${m.account.username}`); }
+      if (m.token) { $("accountDialog").close(); setMsg("storeMsg", ""); toast(`Signed in as ${m.account.username}`); }
       return;
     case "claimed": setMsg("accountMsg", "Today's free coins are in your balance.", true); return;
-    case "bought": setMsg("accountMsg", "Pack added to your balance.", true); busy(false); return;
+    case "bought":
+      busy(false);
+      setMsg(app.payMsg, `Added ${fmt(m.gc)} GC and ${fmt(m.sc)} free SC to your balance.`, true);
+      sound.win();
+      return;
+    case "purchases": app.purchases = m.list; if (app.screen === "store") renderStore(); return;
     case "payout":
       if (app.results) { app.results.tx = m.tx || null; app.results.payoutFailed = Boolean(m.failed); renderLedger(app.results); }
       return;
@@ -248,7 +253,8 @@ function handle(m) {
       busy(false);
       if (m.about === "intent") { if (intentWaiter) intentWaiter.reject(new Error(m.message)); return; }
       if (m.about === "deposit") return setMsg(app.payMsg, m.message);
-      if (m.about === "auth" || m.about === "store") return setMsg("accountMsg", m.message);
+      if (m.about === "auth") return setMsg("accountMsg", m.message);
+      if (m.about === "store") { busy(false); return setMsg(app.screen === "store" ? "storeMsg" : "accountMsg", m.message); }
       if (m.about === "lookup" || m.about === "join") {
         if (m.about === "lookup") app.lookup = null;
         renderJoin();
@@ -1138,6 +1144,7 @@ $("walletBtn").onclick = () => {
 function renderCoins() {
   const on = Boolean(app.coins), crypto = app.cryptoStakes !== false, a = app.account, btn = $("accountBtn");
   btn.hidden = !on;
+  $("storeBtn").hidden = !on;
   document.querySelectorAll(".coin-only").forEach(b => { b.hidden = !on; });
   // With crypto stakes off, rooms are played for coins only and a wallet is only needed to buy a pack
   document.querySelectorAll(".crypto-only").forEach(b => { b.hidden = !crypto; });
@@ -1148,6 +1155,7 @@ function renderCoins() {
     ? [el("span", {}, a.username), el("small", {}, ` · ${fmt(a.GC)} GC · ${fmt(a.SC)} SC`)]
     : ["Sign in"]));
   if ($("accountDialog").open) renderAccount();
+  if (app.screen === "store") renderStore();
 }
 
 function renderAccount() {
@@ -1181,16 +1189,9 @@ function renderAccount() {
       className: "btn solid wide", type: "button", disabled: !a.dailyReady,
       onclick: () => { setMsg("accountMsg", ""); send({ type: "claimDaily" }); }
     }, a.dailyReady ? "Claim today's free coins" : "Free coins claimed today. Back tomorrow."));
-  const packs = app.coins && app.coins.packs;
-  if (packs) {
-    body.append(el("h3", { className: "list-title" }, "Gold Coin packs"),
-      el("ul", { className: "players packs" }, ...Object.entries(packs).map(([id, p]) => el("li", {},
-        el("span", { className: "pname" }, `${fmt(p.gc)} GC`, el("em", {}, ` + ${p.sc} SC free`)),
-        el("button", { className: "btn small", type: "button", onclick: () => buyPack(id) }, `${fmt4(p.lamports / 1e9)} SOL`)))),
-      el("p", { className: "hint" }, "Paid in test SOL on Solana devnet with Phantom. The Sweeps Coins are a free bonus; you are buying the Gold Coins."));
-  } else {
-    body.append(el("p", { className: "hint" }, "The Gold Coin store opens once payments are switched on."));
-  }
+  body.append(el("button", {
+    className: "btn wide", type: "button", onclick: () => { $("accountDialog").close(); openStore(); }
+  }, "Open the coin store"));
   body.append(el("button", {
     className: "btn ghost wide", type: "button",
     onclick: () => { send({ type: "logout", session: store.get("tt-session") }); store.set("tt-session", ""); }
@@ -1205,17 +1206,53 @@ function openAccount() {
 $("accountBtn").onclick = openAccount;
 $("accountClose").onclick = () => $("accountDialog").close();
 
+/* ----- the coin store ----- */
+function openStore() {
+  if (app.screen === "arena") return;
+  if (app.screen !== "store") app.beforeStore = app.screen;
+  setMsg("storeMsg", "");
+  renderStore();
+  show("store");
+  if (app.account) send({ type: "purchases" });
+}
+$("storeBtn").onclick = openStore;
+$("storeBack").onclick = () => show(screenForRoom() || app.beforeStore || "home");
+
+function renderStore() {
+  const packs = (app.coins && app.coins.packs) || {}, a = app.account, open = Boolean(app.coins && app.coins.packs);
+  const first = !a || a.firstPurchase;
+  $("firstBanner").hidden = !open || !first;
+  $("packGrid").replaceChildren(...Object.entries(packs).map(([id, p]) => {
+    const extra = first ? Math.round(p.gc * 0.5) : 0;
+    return el("li", { className: "pack" + (p.tag ? " tagged" : "") },
+      p.tag ? el("span", { className: "pack-tag" }, p.tag) : null,
+      el("span", { className: "pack-name" }, p.name),
+      el("strong", { className: "pack-gc" }, `${fmt(p.gc + extra)} GC`),
+      extra ? el("span", { className: "pack-extra" }, `${fmt(p.gc)} + ${fmt(extra)} first-pack bonus`) : null,
+      el("span", { className: "pack-sc" }, `+ ${p.sc} Sweeps Coins free`),
+      el("button", { className: "btn solid wide", type: "button", onclick: () => buyPack(id) }, `Buy for ${fmt4(p.lamports / 1e9)} SOL`));
+  }));
+  if (!open) $("packGrid").replaceChildren(el("li", { className: "pack-closed" }, "The coin store opens once payments are switched on. Until then, claim your free daily coins from your account."));
+  const list = (a && app.purchases) || [];
+  $("historyBox").hidden = !list.length;
+  $("purchaseList").replaceChildren(...list.map(p => el("li", {},
+    el("span", { className: "pname" }, p.name, el("em", {}, ` · ${new Date(p.at).toLocaleDateString()}`)),
+    el("a", { className: "addr", href: `https://explorer.solana.com/tx/${p.signature}?cluster=devnet`, target: "_blank", rel: "noopener" }, "Receipt"))));
+}
+
 async function buyPack(id) {
   if (isBusy) return;
-  if ((!app.wallet || app.wallet.kind !== "phantom") && !(await connectWallet())) return setMsg("accountMsg", "Connect Phantom to buy a pack.");
+  const msgId = app.screen === "store" ? "storeMsg" : "accountMsg";
+  if (!app.account) { openAccount(); return setMsg(msgId, "Sign in to buy coins."); }
+  if ((!app.wallet || app.wallet.kind !== "phantom") && !(await connectWallet())) return setMsg(msgId, "Connect Phantom to buy a pack.");
   busy(true);
-  app.payMsg = "accountMsg";
+  app.payMsg = msgId;
   try {
-    const deposit = await payStake({ pack: id }, "accountMsg");
+    const deposit = await payStake({ pack: id }, msgId);
     send({ type: "buy", pack: id, deposit });
   } catch (err) {
     busy(false);
-    setMsg("accountMsg", /reject|cancel|denied/i.test(err.message || "") ? "Payment cancelled. Nothing was taken." : err.message || "The payment didn't go through.");
+    setMsg(msgId, /reject|cancel|denied/i.test(err.message || "") ? "Payment cancelled. Nothing was taken." : err.message || "The payment didn't go through.");
   }
 }
 

@@ -25,7 +25,7 @@ Live football trivia with two ways to play. Every match is three questions that 
 
 Set `DATABASE_URL` to a Postgres database to switch on accounts and coin games. Without it there are no accounts and the GC and SC options are hidden.
 
-- **Gold Coins (GC)** are bought in packs (paid in SOL through the escrow, so the store needs `ESCROW_SECRET` too) and played for fun. They never cash out.
+- **Gold Coins (GC)** are bought in the coin store: five packs, the first with 50% more Gold Coins, paid in SOL through the escrow (so the store needs `ESCROW_SECRET` too). They are played for fun and never cash out. Pack sizes and prices are in `PACKS` in `server/coins.js`.
 - **Sweeps Coins (SC)** are never sold. Players get them free on sign-up, once a day, and as a bonus with each Gold Coin pack, and win them from each other in SC rooms. Redemption for prizes is not built yet.
 - Every balance change is a row in the `ledger` table, written in the same transaction as the balance.
 

@@ -3,7 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const WebSocket = require("ws");
-const { createCoins, WELCOME, DAILY, PACKS } = require("../server/coins");
+const { createCoins, WELCOME, DAILY, PACKS, FIRST_BONUS } = require("../server/coins");
 const { createServer } = require("../server");
 
 async function freshPool() {
@@ -72,13 +72,19 @@ test("coins: the daily claim works once a day, and a balance can't be overspent"
 test("coins: a paid pack credits Gold Coins plus its free Sweeps Coins, once per payment", async () => {
   const pool = await freshPool(), coins = await createCoins(pool);
   const { account } = await coins.register("dani", "password123");
-  await coins.creditPack(account.id, "starter", "sig-1");
+  assert.equal(account.firstPurchase, true);
+  const first = await coins.creditPack(account.id, "starter", "sig-1");
+  assert.equal(first.extra, PACKS.starter.gc * FIRST_BONUS, "the first pack comes with 50% more Gold Coins");
   await assert.rejects(coins.creditPack(account.id, "starter", "sig-1"), /already been used/);
   await assert.rejects(coins.creditPack(account.id, "gold-bars", "sig-2"), /no such pack/);
   const a = await coins.account(account.id);
-  assert.deepEqual([a.GC, a.SC], [WELCOME.GC + PACKS.starter.gc, WELCOME.SC + PACKS.starter.sc]);
-  const rows = await pool.query("SELECT reason FROM ledger WHERE account_id = $1 AND reason LIKE 'purchase%' ORDER BY id", [account.id]);
-  assert.deepEqual(rows.rows.map(r => r.reason), ["purchase", "purchase-bonus"], "the ledger shows the SC as a bonus, not a sale");
+  assert.equal(a.firstPurchase, false);
+  assert.deepEqual([a.GC, a.SC], [WELCOME.GC + PACKS.starter.gc * (1 + FIRST_BONUS), WELCOME.SC + PACKS.starter.sc]);
+  const second = await coins.creditPack(account.id, "mega", "sig-3");
+  assert.equal(second.extra, 0, "only the first pack has the bonus");
+  assert.deepEqual((await coins.purchases(account.id)).map(p => p.pack).sort(), ["mega", "starter"]);
+  const rows = await pool.query("SELECT reason FROM ledger WHERE account_id = $1 AND reason LIKE '%purchase%' AND ref = 'sig-1' ORDER BY id", [account.id]);
+  assert.deepEqual(rows.rows.map(r => r.reason), ["purchase", "purchase-bonus", "first-purchase-bonus"], "the ledger shows the SC as a bonus, not a sale");
   await ledgerMatches(pool);
 });
 
