@@ -99,6 +99,9 @@ const clientIp = req => (process.env.TRUST_PROXY ? req.headers["cf-connecting-ip
    coins: when given, players can make accounts and play for Gold and Sweeps Coins. */
 function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
   const lim = { ...LIMITS, ...limits };
+  // SOL and USDC stakes are player-funded pots, which need a gambling licence in most places, so they
+  // are off whenever coins are on. gameOpts.cryptoStakes switches them back on where they are cleared.
+  const cryptoStakes = Boolean(gameOpts.cryptoStakes) || !coins;
   const manager = new RoomManager(gameOpts, escrow, coins);
   const accountSockets = new Map();     // account id -> the send functions of its open connections
   const pushAccount = id => coins.account(id).then(a => (accountSockets.get(id) || []).forEach(s => s({ type: "account", account: a })));
@@ -204,7 +207,7 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
         const entry = manager.find(key);
         if (entry) entry.room.reconnect(entry.player, send);
         send({
-          type: "hello", resumed: Boolean(entry), escrow: escrow ? { address: escrow.address } : null,
+          type: "hello", resumed: Boolean(entry), escrow: escrow ? { address: escrow.address } : null, cryptoStakes,
           coins: coins ? { packs: escrow ? coins.packs : null } : null
         });
         const id = coins && await coins.resume(msg.session);
@@ -277,8 +280,9 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
         }
         case "create":            // group room, or a head-to-head challenge (mode: "h2h")
         case "findMatch": {       // head to head against whoever is waiting at the same stake
-          const currency = ["USDC", "GC", "SC"].includes(msg.currency) ? msg.currency : "SOL";
+          const currency = ["SOL", "USDC", "GC", "SC"].includes(msg.currency) ? msg.currency : cryptoStakes ? "SOL" : "GC";
           if (COIN(currency) && !coins) return fail("Coin games aren't available right now.");
+          if (!COIN(currency) && !cryptoStakes) return fail("Rooms are played for Gold Coins or Sweeps Coins.");
           const stake = COIN(currency) ? cleanCoinStake(msg.stake) : cleanStake(msg.stake);
           const w = who();
           if (!COIN(currency) && !w.wallet) return fail("Connect a wallet first.");
@@ -381,7 +385,8 @@ if (require.main === module) {
       coins = await createCoins(new Pool({ connectionString: url, ssl: /render\.com/.test(url) ? { rejectUnauthorized: false } : undefined }));
     }
     console.log(coins ? "Accounts and coins are on" : "No DATABASE_URL set: no accounts or coin games");
-    const { server, stop } = createServer({}, {}, escrow, coins);
+    // CRYPTO_STAKES=1 brings back SOL and USDC rooms next to the coins (only where a lawyer has cleared them)
+    const { server, stop } = createServer({ cryptoStakes: process.env.CRYPTO_STAKES === "1" }, {}, escrow, coins);
     server.listen(port, () => console.log(`Tiki-Taka Trivia running on http://localhost:${port}`));
     // Hosting platforms send SIGTERM on redeploy: close sockets cleanly so clients reconnect fast
     process.on("SIGTERM", () => stop().then(() => process.exit(0)));

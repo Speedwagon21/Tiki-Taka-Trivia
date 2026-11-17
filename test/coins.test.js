@@ -129,6 +129,11 @@ test("coin rooms: stakes come from accounts, need no wallet, and the winner take
   const ben = await client(port, "coin-ben");
   assert.ok(ana.inbox.find(m => m.type === "hello").coins, "the server says coins are on");
 
+  // With coins on, rooms are coin rooms only: SOL and USDC stakes are switched off
+  assert.equal(ana.inbox.find(m => m.type === "hello").cryptoStakes, false);
+  ana.send({ type: "create", name: "Ana", wallet: "7xQ9aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", stake: 1, currency: "SOL" });
+  assert.match((await ana.next("error")).message, /Gold Coins or Sweeps Coins/);
+
   // Signed out: no coin games
   ana.send({ type: "create", name: "Ana", stake: 1, currency: "SC" });
   assert.match((await ana.next("error")).message, /Sign in/);

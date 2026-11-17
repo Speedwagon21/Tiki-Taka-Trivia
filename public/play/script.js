@@ -189,6 +189,7 @@ function handle(m) {
       setNet("online", "Online");
       app.escrow = m.escrow || null;
       app.coins = m.coins || null;
+      app.cryptoStakes = m.cryptoStakes !== false;
       renderCoins();
       renderEscrowNote();
       if (!m.resumed && app.room) {     // our room is gone (server restarted or it closed)
@@ -1022,6 +1023,7 @@ async function fetchBalance(address) {
 function setWallet(w) {
   app.wallet = w;
   renderWallet();
+  renderCoins();                    // the wallet button shows once a wallet is connected
   if (w && w.kind === "phantom") fetchBalance(w.address).then(b => {
     if (app.wallet && app.wallet.address === w.address) { app.wallet.balance = b; renderWallet(); }
   });
@@ -1134,10 +1136,14 @@ $("walletBtn").onclick = () => {
    are free (sign-up, daily, and a bonus with each pack) and played for prizes.
    ====================================================================== */
 function renderCoins() {
-  const on = Boolean(app.coins), a = app.account, btn = $("accountBtn");
+  const on = Boolean(app.coins), crypto = app.cryptoStakes !== false, a = app.account, btn = $("accountBtn");
   btn.hidden = !on;
   document.querySelectorAll(".coin-only").forEach(b => { b.hidden = !on; });
+  // With crypto stakes off, rooms are played for coins only and a wallet is only needed to buy a pack
+  document.querySelectorAll(".crypto-only").forEach(b => { b.hidden = !crypto; });
+  $("walletBtn").hidden = !crypto && !app.wallet;
   if (!on && isCoin(app.currency)) document.querySelector('.seg [data-cur="SOL"]').click();
+  if (!crypto && !isCoin(app.currency)) document.querySelector('.seg [data-cur="GC"]').click();
   btn.replaceChildren(...(a
     ? [el("span", {}, a.username), el("small", {}, ` · ${fmt(a.GC)} GC · ${fmt(a.SC)} SC`)]
     : ["Sign in"]));
