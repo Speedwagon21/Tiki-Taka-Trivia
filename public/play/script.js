@@ -158,7 +158,7 @@ function connect() {
   const ws = new WebSocket(`${proto}://${location.host}/ws`);
   net.ws = ws;
   setNet("connecting", net.retry ? "Reconnecting…" : "Connecting…");
-  ws.onopen = () => { ws.send(JSON.stringify({ type: "hello", key: clientKey })); };
+  ws.onopen = () => { ws.send(JSON.stringify({ type: "hello", key: clientKey, session: store.get("tt-session") })); };
   ws.onmessage = e => { let m; try { m = JSON.parse(e.data); } catch { return; } handle(m); };
   ws.onclose = () => {
     net.ready = false;
@@ -181,13 +181,15 @@ function handle(m) {
     case "rekey":                       // another tab is using our key (duplicated tab)
       clientKey = newKey();
       store.set("tt-key", clientKey, sessionStorage);
-      net.ws.send(JSON.stringify({ type: "hello", key: clientKey }));
+      net.ws.send(JSON.stringify({ type: "hello", key: clientKey, session: store.get("tt-session") }));
       return;
 
     case "hello":
       net.ready = true; net.retry = 0;
       setNet("online", "Online");
       app.escrow = m.escrow || null;
+      app.coins = m.coins || null;
+      renderCoins();
       renderEscrowNote();
       if (!m.resumed && app.room) {     // our room is gone (server restarted or it closed)
         resetRoom();
@@ -213,7 +215,15 @@ function handle(m) {
     case "searching": return onSearching(m);
     case "searchCancelled": return;
     case "intent": if (intentWaiter) intentWaiter.resolve(m); return;
-    case "refund": return toast(`Stake refunded: ${fmt4(m.lamports / 1e9)} SOL`);
+    case "refund": return toast(`Stake refunded: ${isCoin(m.currency) ? `${fmt(m.amount)} ${m.currency}` : `${fmt4(m.amount / 1e9)} SOL`}`);
+    case "account":
+      if (m.token) store.set("tt-session", m.token);
+      app.account = m.account;
+      renderCoins();
+      if (m.token) { $("accountDialog").close(); toast(`Signed in as ${m.account.username}`); }
+      return;
+    case "claimed": setMsg("accountMsg", "Today's free coins are in your balance.", true); return;
+    case "bought": setMsg("accountMsg", "Pack added to your balance.", true); busy(false); return;
     case "payout":
       if (app.results) { app.results.tx = m.tx || null; app.results.payoutFailed = Boolean(m.failed); renderLedger(app.results); }
       return;
@@ -237,6 +247,7 @@ function handle(m) {
       busy(false);
       if (m.about === "intent") { if (intentWaiter) intentWaiter.reject(new Error(m.message)); return; }
       if (m.about === "deposit") return setMsg(app.payMsg, m.message);
+      if (m.about === "auth" || m.about === "store") return setMsg("accountMsg", m.message);
       if (m.about === "lookup" || m.about === "join") {
         if (m.about === "lookup") app.lookup = null;
         renderJoin();
@@ -276,9 +287,16 @@ const MODES = {
   }
 };
 const REAL_NOTE = '<span class="demo-note">SOL stakes are real transfers of test SOL on Solana devnet. Test SOL has no value. Set Phantom to devnet first (Settings, Developer Settings, Testnet Mode).</span>';
+const COIN_NOTE = {
+  GC: '<span class="demo-note">Gold Coins are for fun: they come from your account and never cash out.</span>',
+  SC: '<span class="demo-note">Sweeps Coins are free (on sign-up, daily, and with Gold Coin packs). Prize redemption is not open yet.</span>'
+};
 const isEscrowed = currency => Boolean(app.escrow) && currency === "SOL";
+const isCoin = currency => currency === "GC" || currency === "SC";
 function renderEscrowNote() {   // static text only
-  $("escrowNote").innerHTML = MODES[app.mode].escrow + "<br>" + (isEscrowed(app.currency) ? REAL_NOTE : DEMO_NOTE);
+  const note = isCoin(app.currency) ? COIN_NOTE[app.currency] : isEscrowed(app.currency) ? REAL_NOTE : DEMO_NOTE;
+  $("escrowNote").innerHTML = MODES[app.mode].escrow + "<br>" + note;
+  $("stake").step = isCoin(app.currency) ? "1" : "0.01";
 }
 const DEMO_NOTE = '<span class="demo-note">Prototype: the escrow is simulated on Solana devnet, so no real funds move.</span>';
 
@@ -332,21 +350,26 @@ function rememberQuestion(id) {
 }
 const identity = () => (app.leaving = false, { name: playerName(), wallet: app.wallet ? app.wallet.address : null, recent: recent() });
 
-/* Shared checks before any stake is locked. Returns the stake, or null after showing why not. */
-async function readyToStake(msgId, consentId) {
-  const stake = parseFloat($("stake").value);
-  if (consentId === "agreeCreate" && !(stake >= 0.01 && stake <= 1000)) { setMsg(msgId, "Enter a stake between 0.01 and 1000."); return null; }
+/* Shared checks before any stake is locked. Returns the stake, or null after showing why not.
+   Coin stakes need an account and a whole number of coins; the others need a wallet. */
+async function readyToStake(msgId, consentId, currency) {
+  const stake = parseFloat($("stake").value), creating = consentId === "agreeCreate";
+  if (creating && isCoin(currency) && !(Number.isInteger(stake) && stake >= 1)) { setMsg(msgId, "Enter a whole number of coins to stake."); return null; }
+  if (creating && !isCoin(currency) && !(stake >= 0.01 && stake <= 1000)) { setMsg(msgId, "Enter a stake between 0.01 and 1000."); return null; }
   if (!$(consentId).checked) { setMsg(msgId, "Confirm you are 18+ and accept the terms to continue."); return null; }
-  if (!app.wallet && !(await connectWallet())) { setMsg(msgId, "Connect a wallet to play for a stake."); return null; }
-  return consentId === "agreeCreate" ? stake : true;
+  if (isCoin(currency)) {
+    if (!app.account) { openAccount(); setMsg(msgId, "Sign in to play for coins."); return null; }
+    if (creating && stake > app.account[currency]) { setMsg(msgId, `You have ${fmt(app.account[currency])} ${currency}.`); return null; }
+  } else if (!app.wallet && !(await connectWallet())) { setMsg(msgId, "Connect a wallet to play for a stake."); return null; }
+  return creating ? stake : true;
 }
 
 async function createRoom(mode) {
   if (isBusy) return;
-  const stake = await readyToStake("homeMsg", "agreeCreate");
+  const stake = await readyToStake("homeMsg", "agreeCreate", app.currency);
   if (stake == null) return;
   busy(true);
-  const lock = await lockStake(isEscrowed(app.currency), { stake }, "homeMsg");
+  const lock = await lockStake(app.currency, { stake }, "homeMsg");
   if (lock) send({ type: "create", mode, stake, currency: app.currency, ...lock, ...identity() });
 }
 $("createBtn").onclick = () => createRoom("group");
@@ -355,7 +378,7 @@ $("challengeBtn").onclick = () => createRoom("h2h");
 /* Head to head with a random opponent */
 $("findBtn").onclick = async () => {
   if (isBusy) return;
-  const stake = await readyToStake("homeMsg", "agreeCreate");
+  const stake = await readyToStake("homeMsg", "agreeCreate", app.currency);
   if (stake == null) return;
   findOpponent(stake, app.currency);
 };
@@ -363,7 +386,7 @@ async function findOpponent(stake, currency) {
   let lock = {};
   if (isEscrowed(currency)) {       // real stakes are held while you wait, and refunded if you cancel
     busy(true);
-    lock = await lockStake(true, { stake }, "homeMsg");
+    lock = await lockStake(currency, { stake }, "homeMsg");
     if (!lock) return;
   }
   setMsg("homeMsg", "");
@@ -375,7 +398,7 @@ const search = { timer: 0, since: 0 };
 function onSearching(m) {
   app.search = { stake: m.stake, currency: m.currency };
   busy(false);
-  $("searchHint").textContent = isEscrowed(m.currency)
+  $("searchHint").textContent = isEscrowed(m.currency) || isCoin(m.currency)
     ? "Your stake is held in escrow while you wait. Cancel and it comes back, less the network fee."
     : "Your stake locks only when we find a match. Share the site with a friend to get a game faster.";
   $("searchSub").textContent = `Head to head for ${fmt(m.stake)} ${m.currency} each. Winner takes ${fmt(m.stake * 2)} ${m.currency}.`;
@@ -449,10 +472,10 @@ function renderJoin() {
 
 $("joinConfirmBtn").onclick = async () => {
   if (isBusy || !app.lookup) return;
-  if ((await readyToStake("joinMsg", "agreeJoin")) == null) return;
+  if ((await readyToStake("joinMsg", "agreeJoin", app.lookup.currency)) == null) return;
   busy(true);
   const code = app.lookup.code;
-  const lock = await lockStake(app.lookup.escrowed, { code }, "joinMsg");
+  const lock = await lockStake(app.lookup.currency, { code }, "joinMsg");
   if (lock) send({ type: "join", code, ...lock, ...identity() });
 };
 
@@ -813,6 +836,11 @@ function renderLedger(m) {
     ledger.append(el("div", { className: "demo-note" }, "Simulated settlement on devnet. No real funds moved."));
     return;
   }
+  if (isCoin(cur)) {
+    line("status: ", m.payoutFailed ? el("b", { className: "bad" }, "payout failed, contact support") : em(m.tx ? "paid" : "paying…"));
+    ledger.append(el("div", { className: "demo-note" }, `Paid into players' ${cur === "GC" ? "Gold Coin" : "Sweeps Coin"} balances.`));
+    return;
+  }
   line("status: ", m.payoutFailed ? el("b", { className: "bad" }, "payout failed, contact support") : em(m.tx ? "confirmed on Solana devnet" : "sending payout…"));
   if (m.tx) ledger.append(el("div", {}, el("a", { href: `https://explorer.solana.com/tx/${m.tx}?cluster=devnet`, target: "_blank", rel: "noopener" }, "View the payout on Solana Explorer")));
   ledger.append(el("div", { className: "demo-note" }, "Paid in test SOL on Solana devnet, less the network fee. Test SOL has no value."));
@@ -872,7 +900,7 @@ $("againBtn").onclick = async () => {
   if (isBusy || !r) return;
   if (r.escrowed && !me().paid) {
     busy(true);
-    const lock = await lockStake(true, { room: true }, "resMsg");
+    const lock = await lockStake(r.currency, { room: true }, "resMsg");
     if (lock) send({ type: "pay", rematch: r.mode === "h2h", ...lock });   // in head to head, paying is your vote
     return;
   }
@@ -952,10 +980,11 @@ async function payStake(req, msgId) {
   return { ref: intent.ref, signature };
 }
 
-/* Returns what to attach to the next message ({} when simulated), or null if the payment didn't happen */
-async function lockStake(escrowed, req, msgId) {
+/* Returns what to attach to the next message ({} when simulated or for coins), or null if the payment didn't happen */
+async function lockStake(currency, req, msgId) {
   app.payMsg = msgId;
-  if (!escrowed) {
+  if (isCoin(currency)) { setMsg(msgId, "Taking your stake…", true); return {}; }   // the server takes coins from the account
+  if (!isEscrowed(currency)) {
     setMsg(msgId, "Signing and locking your stake in escrow…", true);
     await sleep(700);   // mock signing delay, so it feels like a transaction
     return {};
@@ -1002,7 +1031,7 @@ function renderWallet() {
   const btn = $("walletBtn"), w = app.wallet;
   btn.classList.toggle("connected", Boolean(w));
   btn.replaceChildren();
-  if (!w) { btn.textContent = "Connect wallet"; return; }
+  if (!w) { btn.textContent = matchMedia("(max-width: 520px)").matches ? "Wallet" : "Connect wallet"; return; }
   btn.append(el("span", { className: "dot" }), short(w.address));
   if (w.balance != null) btn.append(el("small", {}, ` · ${fmt(w.balance)} SOL`));
   if (w.kind === "demo") btn.append(el("small", {}, " · demo"));
@@ -1099,6 +1128,90 @@ $("walletBtn").onclick = () => {
   });
   p.on?.("disconnect", () => { if (app.wallet?.kind === "phantom") setWallet(null); });
 })();
+
+/* ======================================================================
+   Account and coins: Gold Coins are bought and played for fun; Sweeps Coins
+   are free (sign-up, daily, and a bonus with each pack) and played for prizes.
+   ====================================================================== */
+function renderCoins() {
+  const on = Boolean(app.coins), a = app.account, btn = $("accountBtn");
+  btn.hidden = !on;
+  document.querySelectorAll(".coin-only").forEach(b => { b.hidden = !on; });
+  if (!on && isCoin(app.currency)) document.querySelector('.seg [data-cur="SOL"]').click();
+  btn.replaceChildren(...(a
+    ? [el("span", {}, a.username), el("small", {}, ` · ${fmt(a.GC)} GC · ${fmt(a.SC)} SC`)]
+    : ["Sign in"]));
+  if ($("accountDialog").open) renderAccount();
+}
+
+function renderAccount() {
+  const body = $("accountBody"), a = app.account;
+  body.replaceChildren();
+  if (!a) {
+    $("accountTitle").textContent = "Sign in to play for coins";
+    const user = el("input", { type: "text", id: "accUser", autocomplete: "username", maxLength: 20, spellcheck: false });
+    const pass = el("input", { type: "password", id: "accPass", autocomplete: "current-password", maxLength: 200 });
+    const go = type => () => {
+      setMsg("accountMsg", "");
+      send({ type, username: user.value.trim(), password: pass.value });
+    };
+    body.append(
+      el("p", { className: "sub tight" }, "New accounts start with 10,000 Gold Coins and 2 Sweeps Coins."),
+      el("label", { className: "field" }, el("span", {}, "Username"), user),
+      el("label", { className: "field" }, el("span", {}, "Password (8 characters or more)"), pass),
+      el("div", { className: "wallet-options" },
+        el("button", { className: "btn solid wide", type: "button", onclick: go("login") }, "Sign in"),
+        el("button", { className: "btn wide", type: "button", onclick: go("register") }, "Create account")));
+    pass.addEventListener("keydown", e => { if (e.key === "Enter") go("login")(); });
+    return;
+  }
+  $("accountTitle").textContent = a.username;
+  const balance = (code, name, note) => el("div", {}, el("small", {}, name), el("strong", {}, `${fmt(a[code])} ${code}`), el("span", { className: "t-note" }, note));
+  body.append(
+    el("div", { className: "stake-strip" },
+      balance("GC", "Gold Coins", "For fun. Never cashed out."),
+      balance("SC", "Sweeps Coins", "Free. Played for prizes.")),
+    el("button", {
+      className: "btn solid wide", type: "button", disabled: !a.dailyReady,
+      onclick: () => { setMsg("accountMsg", ""); send({ type: "claimDaily" }); }
+    }, a.dailyReady ? "Claim today's free coins" : "Free coins claimed today. Back tomorrow."));
+  const packs = app.coins && app.coins.packs;
+  if (packs) {
+    body.append(el("h3", { className: "list-title" }, "Gold Coin packs"),
+      el("ul", { className: "players packs" }, ...Object.entries(packs).map(([id, p]) => el("li", {},
+        el("span", { className: "pname" }, `${fmt(p.gc)} GC`, el("em", {}, ` + ${p.sc} SC free`)),
+        el("button", { className: "btn small", type: "button", onclick: () => buyPack(id) }, `${fmt4(p.lamports / 1e9)} SOL`)))),
+      el("p", { className: "hint" }, "Paid in test SOL on Solana devnet with Phantom. The Sweeps Coins are a free bonus; you are buying the Gold Coins."));
+  } else {
+    body.append(el("p", { className: "hint" }, "The Gold Coin store opens once payments are switched on."));
+  }
+  body.append(el("button", {
+    className: "btn ghost wide", type: "button",
+    onclick: () => { send({ type: "logout", session: store.get("tt-session") }); store.set("tt-session", ""); }
+  }, "Sign out"));
+}
+
+function openAccount() {
+  setMsg("accountMsg", "");
+  renderAccount();
+  $("accountDialog").showModal();
+}
+$("accountBtn").onclick = openAccount;
+$("accountClose").onclick = () => $("accountDialog").close();
+
+async function buyPack(id) {
+  if (isBusy) return;
+  if ((!app.wallet || app.wallet.kind !== "phantom") && !(await connectWallet())) return setMsg("accountMsg", "Connect Phantom to buy a pack.");
+  busy(true);
+  app.payMsg = "accountMsg";
+  try {
+    const deposit = await payStake({ pack: id }, "accountMsg");
+    send({ type: "buy", pack: id, deposit });
+  } catch (err) {
+    busy(false);
+    setMsg("accountMsg", /reject|cancel|denied/i.test(err.message || "") ? "Payment cancelled. Nothing was taken." : err.message || "The payment didn't go through.");
+  }
+}
 
 /* ======================================================================
    Start up

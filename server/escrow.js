@@ -60,12 +60,12 @@ function createEscrow({ secret, rpcUrl = "https://api.devnet.solana.com" }) {
       } finally { intent.busy = false; }
     },
 
-    /* Sends one transaction paying every { to, lamports }. Resolves with its signature. */
+    /* Sends one transaction paying every { to, amount } (amount in lamports). Resolves with its signature. */
     pay(transfers) {
       const run = async () => {
         const tx = new web3.Transaction();
         transfers.forEach(t => tx.add(web3.SystemProgram.transfer({
-          fromPubkey: keypair.publicKey, toPubkey: new web3.PublicKey(t.to), lamports: t.lamports
+          fromPubkey: keypair.publicKey, toPubkey: new web3.PublicKey(t.to), lamports: t.amount
         })));
         // A unique memo, so two identical refunds in the same moment are never mistaken for one transaction
         tx.add(new web3.TransactionInstruction({

@@ -95,9 +95,11 @@ class Room {
     this.mode = mode;                 // "group" | "h2h"
     this.matched = matched;           // h2h paired by matchmaking (private: no code to share)
     this.maxPlayers = mode === "h2h" ? 2 : this.opts.groupMax;
-    // Escrowed rooms move real SOL: every player has paid `lamports` on-chain before each match
-    this.escrowed = Boolean(manager.escrow) && currency === "SOL";
-    this.lamports = Math.round(stake * 1e9);
+    // Rooms with a bank hold real stakes: SOL on-chain through the escrow, or Gold or Sweeps Coins from
+    // accounts. Every player has paid `units` (lamports, or whole coins) before each match.
+    this.bank = manager.banks[currency] || null;
+    this.escrowed = Boolean(this.bank);
+    this.units = currency === "SOL" ? Math.round(stake * 1e9) : stake;
     this.players = [];
     this.hostId = null;
     this.phase = "lobby";             // lobby | countdown | question | reveal | results
@@ -126,13 +128,13 @@ class Room {
   player(id) { return this.players.find(p => p.id === id); }
   inMatch() { return ["countdown", "question", "reveal"].includes(this.phase); }
 
-  addPlayer({ key = null, name, wallet = null, send = null, recent = [], paid = 0 }) {
+  addPlayer({ key = null, name, wallet = null, account = null, send = null, recent = [], paid = 0 }) {
     this.lastActive = Date.now();
     // No two players in a room share a name, so nobody can pose as someone else
     const taken = n => this.active.some(o => o.name.toLowerCase() === n.toLowerCase());
     for (let i = 2, base = name; taken(name); i++) name = `${base} ${i}`;
     const p = {
-      id: randomFrom(BASE58, 10), key, name, wallet, send,
+      id: randomFrom(BASE58, 10), key, name, wallet, account, send,
       connected: Boolean(send), left: false, score: 0, answer: null,
       recent: new Set(recent), dropTimer: null,
       paid                              // lamports this player has in escrow for the next match
@@ -148,7 +150,7 @@ class Room {
       p.left = true; p.connected = false; p.send = null;   // keeps their stake in this pot
     } else {
       this.players = this.players.filter(x => x !== p);
-      this.manager.refund(p);                               // no match running: they get their stake back
+      this.manager.refund(p, this.currency);                // no match running: they get their stake back
     }
     this.rematch.delete(p.id);
     if (p.key) this.manager.byKey.delete(p.key);
@@ -362,15 +364,16 @@ class Room {
     this.broadcast(this.lastResults);
   }
 
-  /* Sends the pot on-chain: to the winners, or back to everyone on a draw. One transaction, fee taken from the pot. */
+  /* Pays the pot: to the winners, or back to everyone on a draw. One transfer, any fee taken from the pot. */
   payOut(result) {
-    const escrow = this.manager.escrow, results = this.lastResults;
-    const pot = this.players.reduce((sum, p) => sum + p.paid, 0);
-    const to = result.outcome === "refund" ? this.players : this.players.filter(p => result.winnerIds.includes(p.id));
-    const each = Math.floor((pot - escrow.fee) / to.length);
-    const transfers = to.map(p => ({ to: p.wallet, lamports: each }));
+    const bank = this.bank, results = this.lastResults, draw = result.outcome === "refund";
+    const pot = this.players.reduce((sum, p) => sum + p.paid, 0) - bank.fee;
+    const to = draw ? this.players : this.players.filter(p => result.winnerIds.includes(p.id));
+    const each = Math.floor(pot / to.length);
+    const transfers = to.map(p => ({ to: this.manager.payee(p, this.currency), amount: each, reason: draw ? "refund" : "win" }));
+    transfers[0].amount += pot - each * to.length;          // an uneven split's remainder goes to the first winner
     this.players.forEach(p => { p.paid = 0; });
-    escrow.pay(transfers).then(tx => {
+    bank.pay(transfers).then(tx => {
       results.tx = tx;
       this.broadcast({ type: "payout", tx });
     }, err => {
@@ -383,8 +386,11 @@ class Room {
 }
 
 class RoomManager {
-  constructor(opts = {}, escrow = null) {
-    this.escrow = escrow;
+  /* escrow: the SOL escrow, or null. coins: the Gold and Sweeps Coin accounts, or null. */
+  constructor(opts = {}, escrow = null, coins = null) {
+    this.banks = {};
+    if (escrow) this.banks.SOL = escrow;
+    if (coins) { this.banks.GC = coins.bank("GC"); this.banks.SC = coins.bank("SC"); }
     this.opts = { ...DEFAULTS, ...opts };
     this.rooms = new Map();
     this.byKey = new Map();           // client key -> { room, player }
@@ -462,18 +468,22 @@ class RoomManager {
 
   cancelSearch(key) {
     const entry = this.queue.get(key);
-    if (entry) this.refund(entry.who);
+    if (entry) this.refund(entry.who, entry.currency);
     return this.queue.delete(key);
   }
 
-  /* Returns a held stake, less the network fee. Works for a seated player or someone waiting in the queue. */
-  refund(who) {
-    if (!this.escrow || !who.paid) return;
-    const lamports = who.paid - this.escrow.fee, send = who.send;
+  /* Where a player's winnings go: their wallet for SOL, their account for coins */
+  payee(who, currency) { return currency === "SOL" ? who.wallet : who.account; }
+
+  /* Returns a held stake, less any network fee. Works for a seated player or someone waiting in the queue. */
+  refund(who, currency) {
+    const bank = this.banks[currency];
+    if (!bank || !who.paid) return;
+    const amount = who.paid - bank.fee, send = who.send, to = this.payee(who, currency);
     who.paid = 0;
-    this.escrow.pay([{ to: who.wallet, lamports }]).then(
-      tx => send && send({ type: "refund", tx, lamports }),
-      err => console.error("REFUND FAILED", who.wallet, lamports, err));
+    bank.pay([{ to, amount, reason: "refund" }]).then(
+      tx => send && send({ type: "refund", tx, amount, currency }),
+      err => console.error("REFUND FAILED", currency, to, amount, err));
   }
 
   lookup(code) {
@@ -482,7 +492,7 @@ class RoomManager {
     const host = room.player(room.hostId);
     return {
       code: room.code, mode: room.mode, stake: room.stake, currency: room.currency, phase: room.phase,
-      escrowed: room.escrowed, lamports: room.lamports,
+      escrowed: room.escrowed, units: room.units,
       players: room.active.length, maxPlayers: room.maxPlayers, host: host ? host.name : null
     };
   }
@@ -508,7 +518,7 @@ class RoomManager {
     room.players.forEach(p => {
       if (p.dropTimer) clearTimeout(p.dropTimer);
       if (p.key && this.byKey.get(p.key)?.room === room) this.byKey.delete(p.key);
-      this.refund(p);                                       // anything still held goes back
+      this.refund(p, room.currency);                        // anything still held goes back
       if (p.send) p.send({ type: "closed" });
     });
     this.rooms.delete(room.code);

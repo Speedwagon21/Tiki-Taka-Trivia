@@ -14,6 +14,10 @@
   },
   "dependencies": {
     "@solana/web3.js": "^1.98.4",
+    "pg": "^8.13.1",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "pg-mem": "^3.0.4"
   }
 }

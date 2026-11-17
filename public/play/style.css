@@ -328,6 +328,7 @@ input[type=number] { flex: 1; min-width: 0; font-size: 1.3rem; font-family: var(
 
 /* ---------- Dialog and toast ---------- */
 dialog {
+  margin: auto;                 /* the page reset removes the browser's centring */
   border: 1px solid var(--line); border-radius: 16px; background: var(--turf); color: var(--text);
   padding: 0; width: min(420px, calc(100vw - 32px));
 }
@@ -406,3 +407,13 @@ dialog[open] { animation: zoom .2s ease-out; }
 
 .ledger a { color: var(--green); }
 .ledger .bad { color: var(--red); }
+
+/* ---------- Account ---------- */
+#accountBtn small { color: var(--muted); font-weight: 500; }
+#accountDialog .stake-strip .t-note { display: block; color: var(--muted); font-size: .78rem; margin-top: 2px; }
+#accountDialog .stake-strip, #accountDialog .wallet-options { margin-bottom: 14px; }
+#accountDialog input[type=password] { width: 100%; background: var(--night); border: 1px solid var(--line); color: var(--text); border-radius: 10px; padding: 13px 14px; font: inherit; font-size: 1.05rem; }
+#accountDialog .packs li { padding: 8px 12px; }
+#accountDialog > .dialog-body > div > .btn { margin-bottom: 10px; }
+/* Phones: the header holds the account and the wallet, so the name drops "Trivia" */
+@media (max-width: 520px) { #accountBtn small { display: none; } header h1 span { display: none; } #accountBtn, #walletBtn { padding: 8px 12px; } }

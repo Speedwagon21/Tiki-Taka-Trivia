@@ -21,6 +21,16 @@ Live football trivia with two ways to play. Every match is three questions that 
 - **Reconnects.** Refresh mid-match and you keep your seat. A player who drops for more than 30 seconds is removed, and in Group mode the host role moves to someone else if the host leaves.
 - Sounds (with a mute switch), animations that respect reduced-motion, keyboard answers (1–4), screen-reader announcements and a phone-first layout.
 
+## Accounts, Gold Coins and Sweeps Coins (optional)
+
+Set `DATABASE_URL` to a Postgres database to switch on accounts and coin games. Without it there are no accounts and the GC and SC options are hidden.
+
+- **Gold Coins (GC)** are bought in packs (paid in SOL through the escrow, so the store needs `ESCROW_SECRET` too) and played for fun. They never cash out.
+- **Sweeps Coins (SC)** are never sold. Players get them free on sign-up, once a day, and as a bonus with each Gold Coin pack, and win them from each other in SC rooms. Redemption for prizes is not built yet.
+- Every balance change is a row in the `ledger` table, written in the same transaction as the balance.
+
+Tests run on an in-memory Postgres. To run the coin tests on a real one: `TEST_DATABASE_URL=postgres://... node --test --test-concurrency=1 test/coins.test.js` (it drops the coin tables first).
+
 ## Real stakes on devnet (optional)
 
 By default every stake is simulated. Set `ESCROW_SECRET` to switch SOL rooms to real transfers of test SOL on Solana devnet:
@@ -48,6 +58,7 @@ To try it alone, open two browser windows (or one normal and one private). Creat
 server/index.js      HTTP static server + WebSocket endpoint at /ws
 server/game.js       rooms, matchmaking, rounds, scoring, payouts
 server/escrow.js     on-chain stake payments, payouts and refunds
+server/coins.js      accounts, Gold and Sweeps Coin balances, the ledger, packs
 server/questions.js  question bank (server-only)
 public/index.html    the landing page (built with the design-taste-frontend skill)
 public/play/         the game itself (index.html, script.js, style.css), at /play/

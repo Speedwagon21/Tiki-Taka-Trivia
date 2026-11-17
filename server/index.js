@@ -7,6 +7,7 @@ const { WebSocketServer, WebSocket } = require("ws");
 const { RoomManager } = require("./game");
 
 const { createEscrow } = require("./escrow");
+const { createCoins } = require("./coins");
 
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
 const WEB3_BUNDLE = path.join(__dirname, "..", "node_modules", "@solana", "web3.js", "lib", "index.iife.min.js");
@@ -46,6 +47,13 @@ const cleanName = v => {
 const cleanWallet = v => (typeof v === "string" && /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(v) ? v : null);
 const cleanKey = v => (typeof v === "string" && /^[A-Za-z0-9_-]{16,64}$/.test(v) ? v : null);
 const cleanRecent = v => (Array.isArray(v) ? v.filter(x => typeof x === "string" && x.length < 20).slice(0, 60) : []);
+const COIN = c => c === "GC" || c === "SC";
+const coinName = c => (c === "GC" ? "Gold Coins" : "Sweeps Coins");
+/* A coin stake is a whole number of coins */
+function cleanCoinStake(v) {
+  const n = typeof v === "number" || typeof v === "string" ? Number(v) : NaN;
+  return Number.isInteger(n) && n >= 1 && n <= 1000000 ? n : null;
+}
 function cleanStake(v) {
   const n = typeof v === "number" || typeof v === "string" ? Number(v) : NaN;
   if (!Number.isFinite(n) || n < 0.01 || n > 1000) return null;
@@ -87,10 +95,15 @@ function serveStatic(req, res, rpc) {
    shortcut: trusts cf-connecting-ip when TRUST_PROXY is set, change it if the host uses another header */
 const clientIp = req => (process.env.TRUST_PROXY ? req.headers["cf-connecting-ip"] || null : req.socket.remoteAddress);
 
-/* escrow: when given, SOL rooms take and pay real stakes on-chain; without it every stake is simulated */
-function createServer(gameOpts = {}, limits = {}, escrow = null) {
+/* escrow: when given, SOL rooms take and pay real stakes on-chain; without it SOL stakes are simulated.
+   coins: when given, players can make accounts and play for Gold and Sweeps Coins. */
+function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
   const lim = { ...LIMITS, ...limits };
-  const manager = new RoomManager(gameOpts, escrow);
+  const manager = new RoomManager(gameOpts, escrow, coins);
+  const accountSockets = new Map();     // account id -> the send functions of its open connections
+  const pushAccount = id => coins.account(id).then(a => (accountSockets.get(id) || []).forEach(s => s({ type: "account", account: a })));
+  if (coins) coins.onChange = id => { pushAccount(id).catch(err => console.error("account push failed:", err)); };
+  const authTries = new Map();          // address (or socket) -> { start, count }
   const server = http.createServer((req, res) => serveStatic(req, res, escrow ? escrow.rpcUrl : undefined));
   const perIp = new Map();              // address -> open sockets
   const lookups = new Map();            // address (or socket) -> { start, count }
@@ -109,10 +122,11 @@ function createServer(gameOpts = {}, limits = {}, escrow = null) {
     const ip = clientIp(req);
     if (ip) perIp.set(ip, (perIp.get(ip) || 0) + 1);
     ws.on("close", () => {
-      lookups.delete(ws);
+      lookups.delete(ws); authTries.delete(ws);
+      if (account) accountSockets.get(account)?.delete(send);
       if (ip) perIp.get(ip) > 1 ? perIp.set(ip, perIp.get(ip) - 1) : (perIp.delete(ip), lookups.delete(ip));
     });
-    let key = null;
+    let key = null, account = null;     // account: the signed-in account's id
     ws.isAlive = true;
     ws.on("pong", () => { ws.isAlive = true; });
     const send = msg => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); };
@@ -139,8 +153,35 @@ function createServer(gameOpts = {}, limits = {}, escrow = null) {
     const paidBy = (w, d) => {
       Object.assign(w, { wallet: d.payer, paid: d.lamports });   // the paying wallet is the one that gets paid out
       if (ws.readyState === WebSocket.OPEN) return true;
-      manager.refund(w);
+      manager.refund(w, "SOL");
       return false;
+    };
+    // Takes a coin stake from the signed-in account. Returns false after telling the player why not.
+    const takeCoins = async (w, currency, amount, about) => {
+      const no = message => { send({ type: "error", message, about }); return false; };
+      if (!account) return no("Sign in to play for coins.");
+      if (!(await coins.take(account, currency, amount, "stake"))) return no(`You don't have ${amount.toLocaleString("en")} ${coinName(currency)}.`);
+      Object.assign(w, { account, paid: amount });
+      if (ws.readyState === WebSocket.OPEN) return true;
+      manager.refund(w, currency);
+      return false;
+    };
+    // Takes the stake a room needs, on-chain for SOL or from the account for coins
+    const takeStake = async (w, currency, units, about) => {
+      if (COIN(currency)) return takeCoins(w, currency, units, about);
+      const d = await deposit(w.msg);
+      if (!d || !paidBy(w, d)) return false;
+      if (d.lamports >= units) return true;
+      send({ type: "error", message: "That payment doesn't cover this stake.", about });
+      manager.refund(w, "SOL");
+      return false;
+    };
+    const signIn = async (id, token) => {
+      if (account) accountSockets.get(account)?.delete(send);
+      account = id;
+      if (!accountSockets.has(id)) accountSockets.set(id, new Set());
+      accountSockets.get(id).add(send);
+      send({ type: "account", account: await coins.account(id), ...(token ? { token } : {}) });
     };
 
     ws.on("message", async raw => { try {
@@ -162,54 +203,92 @@ function createServer(gameOpts = {}, limits = {}, escrow = null) {
         liveByKey.set(key, ws);
         const entry = manager.find(key);
         if (entry) entry.room.reconnect(entry.player, send);
-        return send({ type: "hello", resumed: Boolean(entry), escrow: escrow ? { address: escrow.address } : null });
+        send({
+          type: "hello", resumed: Boolean(entry), escrow: escrow ? { address: escrow.address } : null,
+          coins: coins ? { packs: escrow ? coins.packs : null } : null
+        });
+        const id = coins && await coins.resume(msg.session);
+        if (id) await signIn(id);
+        return;
       }
       if (!key) return fail("Say hello first.");
 
       const who = () => ({
-        key, send, name: cleanName(msg.name), wallet: cleanWallet(msg.wallet), recent: cleanRecent(msg.recent)
+        key, send, msg, name: cleanName(msg.name), wallet: cleanWallet(msg.wallet), recent: cleanRecent(msg.recent)
       });
       const entry = manager.find(key);
 
       switch (msg.type) {
-        case "intent": {          // "what do I pay, and where?" before a stake payment
+        case "register":
+        case "login": {
+          if (!coins) return;
+          const id = ip || ws, slot = authTries.get(id);      // slows down password guessing
+          if (!slot || now - slot.start > 60000) authTries.set(id, { start: now, count: 1 });
+          else if (++slot.count > 10) return send({ type: "error", message: "Too many tries. Wait a minute and try again.", about: "auth" });
+          try {
+            const r = msg.type === "register" ? await coins.register(msg.username, msg.password) : await coins.login(msg.username, msg.password);
+            return signIn(r.account.id, r.token);
+          } catch (err) {
+            if (!err.userMessage) throw err;
+            return send({ type: "error", message: err.userMessage, about: "auth" });
+          }
+        }
+        case "logout":
+          if (!coins || !account) return;
+          accountSockets.get(account)?.delete(send);
+          account = null;
+          await coins.logout(msg.session);
+          return send({ type: "account", account: null });
+        case "claimDaily": {
+          if (!coins || !account) return;
+          try { await coins.claimDaily(account); return send({ type: "claimed" }); }
+          catch (err) { if (!err.userMessage) throw err; return send({ type: "error", message: err.userMessage, about: "store" }); }
+        }
+        case "buy": {             // a Gold Coin pack, paid in SOL through the escrow
+          if (!coins || !escrow || !account) return;
+          const pack = coins.packs[msg.pack];
+          if (!pack) return;
+          const d = await deposit(msg);
+          if (!d) return;
+          if (d.lamports < pack.lamports) return send({ type: "error", message: "That payment doesn't cover the pack.", about: "store" });
+          try { await coins.creditPack(account, msg.pack, msg.deposit.signature); return send({ type: "bought", pack: msg.pack }); }
+          catch (err) { if (!err.userMessage) throw err; return send({ type: "error", message: err.userMessage, about: "store" }); }
+        }
+        case "intent": {          // "what do I pay, and where?" before a SOL payment
           if (!escrow) return;
           let lamports = null;
-          if (msg.room) lamports = entry && entry.room.escrowed ? entry.room.lamports : null;
-          else if (msg.code !== undefined) { const info = manager.lookup(msg.code); lamports = info.escrowed ? info.lamports : null; }
+          if (msg.pack !== undefined) lamports = account && coins && coins.packs[msg.pack] ? coins.packs[msg.pack].lamports : null;
+          else if (msg.room) lamports = entry && entry.room.escrowed && entry.room.currency === "SOL" ? entry.room.units : null;
+          else if (msg.code !== undefined) { const info = manager.lookup(msg.code); lamports = info.escrowed && info.currency === "SOL" ? info.units : null; }
           else { const stake = cleanStake(msg.stake); lamports = stake && Math.round(stake * 1e9); }
           if (!lamports) return send({ type: "error", message: "There is nothing to pay for.", about: "intent" });
           return send({ type: "intent", ...escrow.intent(key, lamports), rpc: escrow.rpcUrl });
         }
         case "pay": {             // stake for the next match in a room you are already in
           if (!entry || !entry.room.escrowed || entry.player.paid || entry.room.inMatch()) return;
-          const d = await deposit(msg);
-          if (!d) return;
-          const w = { send };
-          if (!paidBy(w, d)) return;
+          const currency = entry.room.currency, w = { send, msg };
+          if (!(await takeStake(w, currency, entry.room.units, "deposit"))) return;
           const seat = manager.find(key);
-          if (!seat || seat.room !== entry.room || seat.room.inMatch() || seat.player.paid) return manager.refund(w);
-          Object.assign(seat.player, { wallet: w.wallet, paid: w.paid });
+          if (!seat || seat.room !== entry.room || seat.room.inMatch() || seat.player.paid) return manager.refund(w, currency);
+          Object.assign(seat.player, { wallet: w.wallet || seat.player.wallet, account: w.account || seat.player.account, paid: w.paid });
           const err = msg.rematch === true && seat.room.mode === "h2h" ? seat.room.requestRematch(seat.player) : null;
           if (err) fail(err);
           return seat.room.syncState();
         }
         case "create":            // group room, or a head-to-head challenge (mode: "h2h")
         case "findMatch": {       // head to head against whoever is waiting at the same stake
-          const stake = cleanStake(msg.stake);
-          const currency = msg.currency === "USDC" ? "USDC" : "SOL";
+          const currency = ["USDC", "GC", "SC"].includes(msg.currency) ? msg.currency : "SOL";
+          if (COIN(currency) && !coins) return fail("Coin games aren't available right now.");
+          const stake = COIN(currency) ? cleanCoinStake(msg.stake) : cleanStake(msg.stake);
           const w = who();
-          if (!w.wallet) return fail("Connect a wallet first.");
-          if (stake === null) return fail("Enter a stake between 0.01 and 1000.");
-          if (escrow && currency === "SOL") {
-            const d = await deposit(msg);
-            if (!d || !paidBy(w, d)) return;
-            if (d.lamports < Math.round(stake * 1e9)) { fail("That payment doesn't cover this stake."); return manager.refund(w); }
-          }
+          if (!COIN(currency) && !w.wallet) return fail("Connect a wallet first.");
+          if (stake === null) return fail(COIN(currency) ? "Enter a whole number of coins to stake." : "Enter a stake between 0.01 and 1000.");
+          if ((COIN(currency) || (escrow && currency === "SOL")) &&
+              !(await takeStake(w, currency, COIN(currency) ? stake : Math.round(stake * 1e9), "deposit"))) return;
           const r = msg.type === "create"
             ? manager.create(w, { stake, currency, mode: msg.mode })
             : manager.findMatch(w, { stake, currency });
-          if (r.error) { fail(r.error); manager.refund(w); }
+          if (r.error) { fail(r.error); manager.refund(w, currency); }
           return;
         }
         case "cancelSearch":
@@ -225,17 +304,13 @@ function createServer(gameOpts = {}, limits = {}, escrow = null) {
         }
         case "join": {
           const w = who();
-          if (!w.wallet) return fail("Connect a wallet before joining.");
           const info = manager.lookup(msg.code);
+          if (!COIN(info.currency) && !w.wallet) return fail("Connect a wallet before joining.");
           const seated = entry && entry.room.code === info.code;      // just reconnecting: already paid
-          if (info.escrowed && !seated) {
-            const d = await deposit(msg);
-            if (!d || !paidBy(w, d)) return;
-            if (d.lamports < info.lamports) { send({ type: "error", message: "That payment doesn't cover this stake.", about: "join" }); return manager.refund(w); }
-          }
+          if (info.escrowed && !seated && !(await takeStake(w, info.currency, info.units, "join"))) return;
           const r = manager.join(w, msg.code);
-          if (r.error) { send({ type: "error", message: r.error, about: "join" }); manager.refund(w); }
-          else if (seated) manager.refund(w);
+          if (r.error) { send({ type: "error", message: r.error, about: "join" }); manager.refund(w, info.currency); }
+          else if (seated) manager.refund(w, info.currency);
           return;
         }
         case "start": {
@@ -288,7 +363,7 @@ function createServer(gameOpts = {}, limits = {}, escrow = null) {
     wss.close();
     server.close(() => resolve());
     server.closeAllConnections();          // a half-read download must not hold the shutdown open
-  }).then(() => escrow && escrow.idle());   // let refunds for anything still held go out
+  }).then(() => escrow && escrow.idle());   // let refunds for anything still held go out (coin refunds are immediate)
   return { server, wss, manager, stop };
 }
 
@@ -297,10 +372,20 @@ if (require.main === module) {
   // ESCROW_SECRET: the escrow wallet's secret key as a JSON array. Unset means simulated stakes.
   const escrow = process.env.ESCROW_SECRET ? createEscrow({ secret: process.env.ESCROW_SECRET, rpcUrl: process.env.SOLANA_RPC }) : null;
   console.log(escrow ? `Escrow wallet ${escrow.address} on ${escrow.rpcUrl}` : "No ESCROW_SECRET set: all stakes are simulated");
-  const { server, stop } = createServer({}, {}, escrow);
-  server.listen(port, () => console.log(`Tiki-Taka Trivia running on http://localhost:${port}`));
-  // Hosting platforms send SIGTERM on redeploy: close sockets cleanly so clients reconnect fast
-  process.on("SIGTERM", () => stop().then(() => process.exit(0)));
+  // DATABASE_URL: the Postgres database for accounts and coins. Unset means no accounts and no coin games.
+  (async () => {
+    let coins = null;
+    if (process.env.DATABASE_URL) {
+      const { Pool } = require("pg");
+      const url = process.env.DATABASE_URL;
+      coins = await createCoins(new Pool({ connectionString: url, ssl: /render\.com/.test(url) ? { rejectUnauthorized: false } : undefined }));
+    }
+    console.log(coins ? "Accounts and coins are on" : "No DATABASE_URL set: no accounts or coin games");
+    const { server, stop } = createServer({}, {}, escrow, coins);
+    server.listen(port, () => console.log(`Tiki-Taka Trivia running on http://localhost:${port}`));
+    // Hosting platforms send SIGTERM on redeploy: close sockets cleanly so clients reconnect fast
+    process.on("SIGTERM", () => stop().then(() => process.exit(0)));
+  })();
 }
 
 module.exports = { createServer, cleanName, cleanStake, cleanWallet };

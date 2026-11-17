@@ -28,6 +28,7 @@
     <button class="icon-btn" id="muteBtn" aria-pressed="false" aria-label="Mute sounds" title="Sound on/off">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path class="spk" d="M4 9v6h4l5 4V5L8 9H4z"/><path class="wave" d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12"/><path class="cross" d="M16 9l6 6M22 9l-6 6"/></svg>
     </button>
+    <button class="btn" id="accountBtn" hidden>Sign in</button>
     <button class="btn" id="walletBtn">Connect wallet</button>
   </div>
 </header>
@@ -62,6 +63,8 @@
         <div class="seg" role="radiogroup" aria-label="Currency">
           <button role="radio" aria-checked="true" class="on" data-cur="SOL">SOL</button>
           <button role="radio" aria-checked="false" data-cur="USDC">USDC</button>
+          <button role="radio" aria-checked="false" data-cur="GC" class="coin-only" hidden title="Gold Coins: for fun, never cashed out">GC</button>
+          <button role="radio" aria-checked="false" data-cur="SC" class="coin-only" hidden title="Sweeps Coins: free coins you play for prizes">SC</button>
         </div>
       </div>
       <div class="escrow" id="escrowNote"></div>
@@ -217,19 +220,27 @@
     <h3>9. Verification and financial crime</h3>
     <p>We may be legally required to verify who you are, where your funds come from, and to screen wallets against sanctions lists. We may refuse or suspend service, freeze payouts and share information with regulators and law enforcement to meet these duties.</p>
 
-    <h3>10. Risks</h3>
+    <h3>10. Gold Coins and Sweeps Coins</h3>
+    <ul>
+      <li>Gold Coins are bought in packs and used to play for fun. They have no cash value and can never be redeemed, transferred or refunded.</li>
+      <li>Sweeps Coins are never sold. You get them free: when you sign up, once a day, and as a bonus with a Gold Coin pack. No purchase is needed to get or play with Sweeps Coins, and buying Gold Coins does not improve your chances.</li>
+      <li>Sweeps Coins won from other players may later be redeemable for prizes in eligible places, under official sweepstakes rules published before redemption opens. Redemption is not open yet.</li>
+      <li>One account per person. Accounts used to get free coins more than once, or to pass coins between players by losing on purpose, may be closed and their coins removed.</li>
+    </ul>
+
+    <h3>11. Risks</h3>
     <p>Crypto-assets such as SOL can change sharply in value. USDC and other stablecoins can lose their peg. Smart contracts and blockchains can contain bugs or be attacked, and wallet software can fail. You accept these risks when you use the Service.</p>
 
-    <h3>11. Our liability</h3>
+    <h3>12. Our liability</h3>
     <p>The Service is provided "as is" and "as available." To the extent the law allows, we are not liable for lost stakes, lost winnings, network failures, wallet or third-party faults, or indirect losses. Nothing in these terms limits liability that cannot be excluded by law.</p>
 
-    <h3>12. Privacy</h3>
+    <h3>13. Privacy</h3>
     <p>We process your wallet address, display name, match history, device and location data to run the Service, prevent fraud and meet legal duties, as described in our privacy notice [link]. Your display name and a shortened wallet address are shown to other players in your room. Blockchain transactions are public and cannot be deleted.</p>
 
-    <h3>13. Changes to these terms</h3>
+    <h3>14. Changes to these terms</h3>
     <p>We may update these terms and will show the new date above. If you keep using the Service after a change, you accept the updated terms. Changes never affect a match that is already in progress.</p>
 
-    <h3>14. Governing law and contact</h3>
+    <h3>15. Governing law and contact</h3>
     <p>These terms are governed by the laws of [jurisdiction], and its courts have jurisdiction, unless your local consumer law says otherwise. Questions and complaints: [contact email], [licence number and regulator, if licensed].</p>
   </section>
 </main>
@@ -241,6 +252,16 @@
 </footer>
 
 <!-- Wallet dialog: install/connect help, demo wallet, or connected details -->
+<!-- Account dialog: sign in or sign up, then balances, the free daily claim and the Gold Coin store -->
+<dialog id="accountDialog" aria-labelledby="accountTitle">
+  <div class="dialog-body">
+    <h2 id="accountTitle">Your account</h2>
+    <div id="accountBody"></div>
+    <p class="msg" id="accountMsg" role="alert"></p>
+    <div class="dialog-actions"><button class="btn ghost" type="button" id="accountClose">Close</button></div>
+  </div>
+</dialog>
+
 <dialog id="walletDialog" aria-labelledby="walletTitle">
   <form method="dialog" class="dialog-body">
     <h2 id="walletTitle">Wallet</h2>

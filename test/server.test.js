@@ -467,8 +467,8 @@ test("escrow: stakes are taken before seating, refunded on leaving, and the pot 
   await guest.next("room");
   guest.send({ type: "leave" });
   const refund = await guest.next("refund");
-  assert.equal(refund.lamports, 2 * SOL - FEE);
-  assert.deepEqual(escrow.sent[0], [{ to: WALLET_B, lamports: 2 * SOL - FEE }]);
+  assert.equal(refund.amount, 2 * SOL - FEE);
+  assert.deepEqual(escrow.sent[0], [{ to: WALLET_B, amount: 2 * SOL - FEE, reason: "refund" }]);
 
   const g2 = await stake(guest, WALLET_B, { code: room.code });
   guest.send({ type: "join", code: room.code, name: "Ben", wallet: WALLET_B, ...g2 });
@@ -486,7 +486,7 @@ test("escrow: stakes are taken before seating, refunded on leaving, and the pot 
   assert.equal(results.tx, null, "the real signature arrives with the payout");
   assert.equal((await host.next("payout")).tx, "tx2");
   const paid = escrow.sent[1];
-  assert.equal(paid.reduce((sum, t) => sum + t.lamports, 0) + FEE, 4 * SOL, "the whole pot goes out, less one fee");
+  assert.equal(paid.reduce((sum, t) => sum + t.amount, 0) + FEE, 4 * SOL, "the whole pot goes out, less one fee");
   const expected = results.outcome === "refund" ? [WALLET_A, WALLET_B] : [results.standings[0].id === results.winnerIds[0] && results.winnerIds[0] === room.you ? WALLET_A : WALLET_B];
   assert.deepEqual(paid.map(t => t.to).sort(), expected.sort());
 
@@ -516,7 +516,7 @@ test("escrow: matchmaking refunds a cancelled search, and a seat that can't be t
   a.send({ type: "findMatch", name: "A", wallet: WALLET_A, stake: 1, currency: "SOL", ...(await stake(a, WALLET_A, { stake: 1 })) });
   await a.next("searching");
   a.send({ type: "cancelSearch" });
-  assert.equal((await a.next("refund")).lamports, SOL - FEE);
+  assert.equal((await a.next("refund")).amount, SOL - FEE);
 
   // USDC is still simulated: no payment needed even with the escrow on
   a.send({ type: "create", name: "A", wallet: WALLET_A, stake: 1, currency: "USDC" });
@@ -531,7 +531,7 @@ test("escrow: matchmaking refunds a cancelled search, and a seat that can't be t
   await b.next("countdown");
   c.send({ type: "join", code: room.code, name: "C", wallet: WALLET_B, ...late });
   assert.match((await c.next("error")).message, /under way|two players/);
-  assert.equal((await c.next("refund")).lamports, SOL - FEE);
+  assert.equal((await c.next("refund")).amount, SOL - FEE);
 
   // Head-to-head rematch: paying is what casts your vote
   await a.next("results", () => true, 5000);
@@ -543,7 +543,7 @@ test("escrow: matchmaking refunds a cancelled search, and a seat that can't be t
   b.send({ type: "leave" });                         // opponent walks away: the payer's stake comes back when they leave
   await a.next("room", m => m.players.length === 1);
   a.send({ type: "leave" });
-  assert.equal((await a.next("refund")).lamports, SOL - FEE);
+  assert.equal((await a.next("refund")).amount, SOL - FEE);
 
   [a, b, c].forEach(x => x.close());
   await server.close();
