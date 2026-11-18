@@ -66,14 +66,14 @@ function scoreAnswer(isRight, elapsedMs, questionMs) {
 }
 
 /* Who gets what. The top score takes the pot; a shared top score splits it;
-   if every player is level, everyone is refunded. */
-function settle(players, stake) {
+   if every player is level, everyone is refunded. rake: the house's share of a won pot (0 to 1). */
+function settle(players, stake, rake = 0) {
   const pot = round2(stake * players.length);
   const best = Math.max(...players.map(p => p.score));
   const winners = players.filter(p => p.score === best);
   const everyoneLevel = winners.length === players.length;
   const outcome = everyoneLevel ? "refund" : winners.length > 1 ? "split" : "win";
-  const share = everyoneLevel ? stake : round2(pot / winners.length);
+  const share = everyoneLevel ? stake : round2(pot * (1 - rake) / winners.length);
 
   const sorted = [...players].sort((a, b) => b.score - a.score);
   const standings = sorted.map(p => {
@@ -82,7 +82,7 @@ function settle(players, stake) {
     return { id: p.id, name: p.name, wallet: short(p.wallet), left: p.left,
              score: p.score, rank, payout, net: round2(payout - stake) };
   });
-  return { pot, outcome, standings, winnerIds: everyoneLevel ? [] : winners.map(p => p.id) };
+  return { pot, outcome, rake: everyoneLevel ? 0 : rake, standings, winnerIds: everyoneLevel ? [] : winners.map(p => p.id) };
 }
 
 class Room {
@@ -99,7 +99,8 @@ class Room {
     // accounts. Every player has paid `units` (lamports, or whole coins) before each match.
     this.bank = manager.banks[currency] || null;
     this.escrowed = Boolean(this.bank);
-    this.units = currency === "SOL" ? Math.round(stake * 1e9) : stake;
+    this.units = currency === "SOL" ? Math.round(stake * 1e9) : currency === "SC" ? Math.round(stake * 100) : stake;
+    this.rake = this.bank && this.bank.rake || 0;
     this.players = [];
     this.hostId = null;
     this.phase = "lobby";             // lobby | countdown | question | reveal | results
@@ -210,6 +211,7 @@ class Room {
       stake: this.stake,
       currency: this.currency,
       pot: round2(this.stake * this.players.length),   // includes anyone who quit mid-match
+      rake: this.rake,
       maxPlayers: this.maxPlayers,
       matchNo: this.matchNo,
       rematch: [...this.rematch],
@@ -348,7 +350,7 @@ class Room {
     this.lastActive = Date.now();
     this.phase = "results";
     this.matchNo++;
-    const result = settle(this.players, this.stake);
+    const result = settle(this.players, this.stake, this.rake);
     this.lastResults = {
       type: "results",
       mode: this.mode,
@@ -367,7 +369,8 @@ class Room {
   /* Pays the pot: to the winners, or back to everyone on a draw. One transfer, any fee taken from the pot. */
   payOut(result) {
     const bank = this.bank, results = this.lastResults, draw = result.outcome === "refund";
-    const pot = this.players.reduce((sum, p) => sum + p.paid, 0) - bank.fee;
+    const held = this.players.reduce((sum, p) => sum + p.paid, 0) - bank.fee;
+    const pot = draw ? held : held - Math.floor(held * (bank.rake || 0));   // a draw is refunded in full
     const to = draw ? this.players : this.players.filter(p => result.winnerIds.includes(p.id));
     const each = Math.floor(pot / to.length);
     const transfers = to.map(p => ({ to: this.manager.payee(p, this.currency), amount: each, reason: draw ? "refund" : "win" }));
@@ -492,7 +495,7 @@ class RoomManager {
     const host = room.player(room.hostId);
     return {
       code: room.code, mode: room.mode, stake: room.stake, currency: room.currency, phase: room.phase,
-      escrowed: room.escrowed, units: room.units,
+      escrowed: room.escrowed, units: room.units, rake: room.rake,
       players: room.active.length, maxPlayers: room.maxPlayers, host: host ? host.name : null
     };
   }

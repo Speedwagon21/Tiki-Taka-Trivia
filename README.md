@@ -25,8 +25,10 @@ Live football trivia with two ways to play. Every match is three questions that 
 
 Set `DATABASE_URL` to a Postgres database to switch on accounts and coin games. Without it there are no accounts and the GC and SC options are hidden.
 
-- **Gold Coins (GC)** are bought in the coin store: five packs, the first with 50% more Gold Coins, paid in SOL through the escrow (so the store needs `ESCROW_SECRET` too). They are played for fun and never cash out. Pack sizes and prices are in `PACKS` in `server/coins.js`.
-- **Sweeps Coins (SC)** are never sold. Players get them free on sign-up, once a day, and as a bonus with each Gold Coin pack, and win them from each other in SC rooms. Redemption for prizes is not built yet.
+- **Gold Coins (GC)** are bought in the coin store: packs from $4.99 to $49.99, plus a one-time $1.99 welcome offer for an account's first purchase. Prices are in dollars and charged in SOL through the escrow at the `SOL_USD` rate (default 35), so the store needs `ESCROW_SECRET` too. They are played for fun and never cash out. Pack sizes and prices are in `PACKS` in `server/coins.js`.
+- **The house cut:** the house keeps 10% of every Sweeps Coin pot a player wins (`SC_RAKE`); a draw is refunded in full.
+- **Units:** Sweeps Coins are stored in cents (1 SC = 100), so free amounts like 0.30 a day work. An older database with whole coins is converted once at start-up.
+- **Sweeps Coins (SC)** are never sold. Players get them free (1 on sign-up, 0.30 a day, and a bonus with each Gold Coin pack) and win them from each other in SC rooms. Redemption for prizes is not built yet.
 - Every balance change is a row in the `ledger` table, written in the same transaction as the balance.
 
 Tests run on an in-memory Postgres. To run the coin tests on a real one: `TEST_DATABASE_URL=postgres://... node --test --test-concurrency=1 test/coins.test.js` (it drops the coin tables first).

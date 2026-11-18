@@ -216,7 +216,7 @@ function handle(m) {
     case "searching": return onSearching(m);
     case "searchCancelled": return;
     case "intent": if (intentWaiter) intentWaiter.resolve(m); return;
-    case "refund": return toast(`Stake refunded: ${isCoin(m.currency) ? `${fmt(m.amount)} ${m.currency}` : `${fmt4(m.amount / 1e9)} SOL`}`);
+    case "refund": return toast(`Stake refunded: ${isCoin(m.currency) ? coinText(m.currency, m.amount) : `${fmt4(m.amount / 1e9)} SOL`}`);
     case "account":
       if (m.token) store.set("tt-session", m.token);
       app.account = m.account;
@@ -296,14 +296,21 @@ const MODES = {
 const REAL_NOTE = '<span class="demo-note">SOL stakes are real transfers of test SOL on Solana devnet. Test SOL has no value. Set Phantom to devnet first (Settings, Developer Settings, Testnet Mode).</span>';
 const COIN_NOTE = {
   GC: '<span class="demo-note">Gold Coins are for fun: they come from your account and never cash out.</span>',
-  SC: '<span class="demo-note">Sweeps Coins are free (on sign-up, daily, and with Gold Coin packs). Prize redemption is not open yet.</span>'
+  SC: '<span class="demo-note">Sweeps Coins are free (1 on sign-up, 0.30 a day, and a bonus with Gold Coin packs). The house keeps 10% of a won pot; draws are refunded in full. Prize redemption is not open yet.</span>'
 };
 const isEscrowed = currency => Boolean(app.escrow) && currency === "SOL";
 const isCoin = currency => currency === "GC" || currency === "SC";
+/* The server keeps Sweeps Coins in cents and Gold Coins whole; these turn its units into coins */
+const coinsOf = (currency, units) => (currency === "SC" ? units / 100 : units);
+const coinText = (currency, units) => currency === "SC"
+  ? `${(units / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} SC`
+  : `${fmt(units)} GC`;
+/* What the winner of a full pot takes home after the house cut */
+const winnings = (stake, players, rake = 0) => fmt(stake * players * (1 - rake));
 function renderEscrowNote() {   // static text only
   const note = isCoin(app.currency) ? COIN_NOTE[app.currency] : isEscrowed(app.currency) ? REAL_NOTE : DEMO_NOTE;
   $("escrowNote").innerHTML = MODES[app.mode].escrow + "<br>" + note;
-  $("stake").step = isCoin(app.currency) ? "1" : "0.01";
+  $("stake").step = app.currency === "GC" ? "1" : "0.01";
 }
 const DEMO_NOTE = '<span class="demo-note">Prototype: the escrow is simulated on Solana devnet, so no real funds move.</span>';
 
@@ -361,12 +368,13 @@ const identity = () => (app.leaving = false, { name: playerName(), wallet: app.w
    Coin stakes need an account and a whole number of coins; the others need a wallet. */
 async function readyToStake(msgId, consentId, currency) {
   const stake = parseFloat($("stake").value), creating = consentId === "agreeCreate";
-  if (creating && isCoin(currency) && !(Number.isInteger(stake) && stake >= 1)) { setMsg(msgId, "Enter a whole number of coins to stake."); return null; }
+  if (creating && currency === "GC" && !(Number.isInteger(stake) && stake >= 1)) { setMsg(msgId, "Enter a whole number of Gold Coins to stake."); return null; }
+  if (creating && currency === "SC" && !(stake >= 0.01 && Math.abs(stake * 100 - Math.round(stake * 100)) < 1e-9)) { setMsg(msgId, "Enter a Sweeps Coin stake to the cent, from 0.01."); return null; }
   if (creating && !isCoin(currency) && !(stake >= 0.01 && stake <= 1000)) { setMsg(msgId, "Enter a stake between 0.01 and 1000."); return null; }
   if (!$(consentId).checked) { setMsg(msgId, "Confirm you are 18+ and accept the terms to continue."); return null; }
   if (isCoin(currency)) {
     if (!app.account) { openAccount(); setMsg(msgId, "Sign in to play for coins."); return null; }
-    if (creating && stake > app.account[currency]) { setMsg(msgId, `You have ${fmt(app.account[currency])} ${currency}.`); return null; }
+    if (creating && stake > coinsOf(currency, app.account[currency])) { setMsg(msgId, `You have ${coinText(currency, app.account[currency])}.`); return null; }
   } else if (!app.wallet && !(await connectWallet())) { setMsg(msgId, "Connect a wallet to play for a stake."); return null; }
   return creating ? stake : true;
 }
@@ -468,7 +476,7 @@ function renderJoin() {
       el("dt", {}, h2h ? "Challenger" : "Host"), el("dd", {}, r.host || "—"),
       el("dt", {}, "Stake"), el("dd", {}, `${fmt(r.stake)} ${r.currency} each`),
       el("dt", {}, h2h ? "Winner gets" : "Players"),
-      el("dd", {}, h2h ? `${fmt(r.stake * 2)} ${r.currency}` : `${r.players} of ${r.maxPlayers}`)),
+      el("dd", {}, h2h ? `${winnings(r.stake, 2, r.rake)} ${r.currency}` : `${r.players} of ${r.maxPlayers}`)),
     ...(playing ? [el("p", { className: "warn" }, "A match is in progress. You can join once it finishes.")] : []),
     ...(h2h && !full && !playing ? [el("p", { className: "hint flush" }, "The match starts the moment you join.")] : [])
   );
@@ -538,7 +546,7 @@ function renderRoom() {
   $("roomStake").replaceChildren(
     el("div", {}, el("small", {}, "Stake each"), el("strong", {}, `${fmt(r.stake)} ${r.currency}`)),
     h2h
-      ? el("div", {}, el("small", {}, "Winner gets"), el("strong", { className: "accent" }, `${fmt(r.stake * 2)} ${r.currency}`))
+      ? el("div", {}, el("small", {}, r.rake ? "Winner gets (after 10% cut)" : "Winner gets"), el("strong", { className: "accent" }, `${winnings(r.stake, 2, r.rake)} ${r.currency}`))
       : el("div", {}, el("small", {}, "Pot so far"), el("strong", { className: "accent" }, `${fmt(r.pot)} ${r.currency}`))
   );
   $("playerCount").textContent = `${r.players.length}/${r.maxPlayers}`;
@@ -1152,7 +1160,7 @@ function renderCoins() {
   if (!on && isCoin(app.currency)) document.querySelector('.seg [data-cur="SOL"]').click();
   if (!crypto && !isCoin(app.currency)) document.querySelector('.seg [data-cur="GC"]').click();
   btn.replaceChildren(...(a
-    ? [el("span", {}, a.username), el("small", {}, ` · ${fmt(a.GC)} GC · ${fmt(a.SC)} SC`)]
+    ? [el("span", {}, a.username), el("small", {}, ` · ${coinText("GC", a.GC)} · ${coinText("SC", a.SC)}`)]
     : ["Sign in"]));
   if ($("accountDialog").open) renderAccount();
   if (app.screen === "store") renderStore();
@@ -1170,7 +1178,7 @@ function renderAccount() {
       send({ type, username: user.value.trim(), password: pass.value });
     };
     body.append(
-      el("p", { className: "sub tight" }, "New accounts start with 10,000 Gold Coins and 2 Sweeps Coins."),
+      el("p", { className: "sub tight" }, "New accounts start with 10,000 Gold Coins and 1 Sweeps Coin."),
       el("label", { className: "field" }, el("span", {}, "Username"), user),
       el("label", { className: "field" }, el("span", {}, "Password (8 characters or more)"), pass),
       el("div", { className: "wallet-options" },
@@ -1180,7 +1188,7 @@ function renderAccount() {
     return;
   }
   $("accountTitle").textContent = a.username;
-  const balance = (code, name, note) => el("div", {}, el("small", {}, name), el("strong", {}, `${fmt(a[code])} ${code}`), el("span", { className: "t-note" }, note));
+  const balance = (code, name, note) => el("div", {}, el("small", {}, name), el("strong", {}, coinText(code, a[code])), el("span", { className: "t-note" }, note));
   body.append(
     el("div", { className: "stake-strip" },
       balance("GC", "Gold Coins", "For fun. Never cashed out."),
@@ -1222,16 +1230,15 @@ function renderStore() {
   const packs = (app.coins && app.coins.packs) || {}, a = app.account, open = Boolean(app.coins && app.coins.packs);
   const first = !a || a.firstPurchase;
   $("firstBanner").hidden = !open || !first;
-  $("packGrid").replaceChildren(...Object.entries(packs).map(([id, p]) => {
-    const extra = first ? Math.round(p.gc * 0.5) : 0;
-    return el("li", { className: "pack" + (p.tag ? " tagged" : "") },
+  // The welcome offer is only for an account's first purchase, so it disappears after one
+  $("packGrid").replaceChildren(...Object.entries(packs).filter(([, p]) => first || !p.firstOnly).map(([id, p]) =>
+    el("li", { className: "pack" + (p.tag ? " tagged" : "") },
       p.tag ? el("span", { className: "pack-tag" }, p.tag) : null,
       el("span", { className: "pack-name" }, p.name),
-      el("strong", { className: "pack-gc" }, `${fmt(p.gc + extra)} GC`),
-      extra ? el("span", { className: "pack-extra" }, `${fmt(p.gc)} + ${fmt(extra)} first-pack bonus`) : null,
-      el("span", { className: "pack-sc" }, `+ ${p.sc} Sweeps Coins free`),
-      el("button", { className: "btn solid wide", type: "button", onclick: () => buyPack(id) }, `Buy for ${fmt4(p.lamports / 1e9)} SOL`));
-  }));
+      el("strong", { className: "pack-gc" }, `${fmt(p.gc)} GC`),
+      el("span", { className: "pack-sc" }, `+ ${p.sc} Sweeps Coin${p.sc === 1 ? "" : "s"} free`),
+      el("button", { className: "btn solid wide", type: "button", onclick: () => buyPack(id) }, `Buy for $${p.usd.toFixed(2)}`),
+      el("span", { className: "pack-extra" }, `Paid as ${fmt4(p.lamports / 1e9)} SOL`))));
   if (!open) $("packGrid").replaceChildren(el("li", { className: "pack-closed" }, "The coin store opens once payments are switched on. Until then, claim your free daily coins from your account."));
   const list = (a && app.purchases) || [];
   $("historyBox").hidden = !list.length;

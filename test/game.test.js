@@ -62,6 +62,15 @@ test("settle: a shared top score splits the pot", () => {
   assert.deepEqual(r.standings.map(s => s.rank), [1, 1, 3]);
 });
 
+test("settle: a house cut comes off a won pot, never off a refund", () => {
+  const won = settle([P("a", 900), P("b", 100)], 10, 0.1);
+  assert.deepEqual(won.standings.map(s => s.payout), [18, 0]);
+  assert.equal(won.rake, 0.1);
+  const level = settle([P("a", 0), P("b", 0)], 10, 0.1);
+  assert.deepEqual(level.standings.map(s => s.payout), [10, 10]);
+  assert.equal(level.rake, 0);
+});
+
 test("settle: everyone level means everyone is refunded", () => {
   const r = settle([P("a", 0), P("b", 0)], 0.5);
   assert.equal(r.outcome, "refund");

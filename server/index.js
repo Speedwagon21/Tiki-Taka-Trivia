@@ -49,11 +49,18 @@ const cleanKey = v => (typeof v === "string" && /^[A-Za-z0-9_-]{16,64}$/.test(v)
 const cleanRecent = v => (Array.isArray(v) ? v.filter(x => typeof x === "string" && x.length < 20).slice(0, 60) : []);
 const COIN = c => c === "GC" || c === "SC";
 const coinName = c => (c === "GC" ? "Gold Coins" : "Sweeps Coins");
-/* A coin stake is a whole number of coins */
-function cleanCoinStake(v) {
+/* A coin stake: whole Gold Coins, or Sweeps Coins to the cent */
+function cleanCoinStake(v, currency) {
   const n = typeof v === "number" || typeof v === "string" ? Number(v) : NaN;
-  return Number.isInteger(n) && n >= 1 && n <= 1000000 ? n : null;
+  if (currency === "GC") return Number.isInteger(n) && n >= 1 && n <= 1000000 ? n : null;
+  return Number.isFinite(n) && n >= 0.01 && n <= 10000 && Math.abs(n * 100 - Math.round(n * 100)) < 1e-9 ? Math.round(n * 100) / 100 : null;
 }
+/* A stake in the units it is held in: lamports for SOL, cents for Sweeps Coins, coins for Gold Coins */
+const unitsFor = (currency, stake) => (currency === "SOL" ? Math.round(stake * 1e9) : currency === "SC" ? Math.round(stake * 100) : stake);
+/* Packs are priced in dollars and charged in SOL at this rate.
+   shortcut: a fixed rate from SOL_USD (default 35), switch to a live price feed before taking real SOL */
+const SOL_USD = Number(process.env.SOL_USD) || 35;
+const packLamports = pack => Math.round(pack.usd / SOL_USD * 1e9);
 function cleanStake(v) {
   const n = typeof v === "number" || typeof v === "string" ? Number(v) : NaN;
   if (!Number.isFinite(n) || n < 0.01 || n > 1000) return null;
@@ -163,7 +170,7 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
     const takeCoins = async (w, currency, amount, about) => {
       const no = message => { send({ type: "error", message, about }); return false; };
       if (!account) return no("Sign in to play for coins.");
-      if (!(await coins.take(account, currency, amount, "stake"))) return no(`You don't have ${amount.toLocaleString("en")} ${coinName(currency)}.`);
+      if (!(await coins.take(account, currency, amount, "stake"))) return no(`You don't have ${(amount / coins.unit[currency]).toLocaleString("en")} ${coinName(currency)}.`);
       Object.assign(w, { account, paid: amount });
       if (ws.readyState === WebSocket.OPEN) return true;
       manager.refund(w, currency);
@@ -208,7 +215,9 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
         if (entry) entry.room.reconnect(entry.player, send);
         send({
           type: "hello", resumed: Boolean(entry), escrow: escrow ? { address: escrow.address } : null, cryptoStakes,
-          coins: coins ? { packs: escrow ? coins.packs : null } : null
+          coins: coins ? {
+            packs: escrow ? Object.fromEntries(Object.entries(coins.packs).map(([id, p]) => [id, { ...p, lamports: packLamports(p) }])) : null
+          } : null
         });
         const id = coins && await coins.resume(msg.session);
         if (id) await signIn(id);
@@ -254,12 +263,13 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
           if (!coins || !escrow || !account) return;
           const pack = coins.packs[msg.pack];
           if (!pack) return;
+          if (!(await coins.mayBuy(account, msg.pack))) return send({ type: "error", message: "The welcome offer is for your first purchase only.", about: "store" });
           const d = await deposit(msg);
           if (!d) return;
-          if (d.lamports < pack.lamports) return send({ type: "error", message: "That payment doesn't cover the pack.", about: "store" });
+          if (d.lamports < packLamports(pack)) return send({ type: "error", message: "That payment doesn't cover the pack.", about: "store" });
           try {
             const got = await coins.creditPack(account, msg.pack, msg.deposit.signature);
-            send({ type: "bought", pack: msg.pack, gc: got.gc + got.extra, sc: got.sc });
+            send({ type: "bought", pack: msg.pack, gc: got.gc, sc: got.sc });
             return send({ type: "purchases", list: await coins.purchases(account) });
           }
           catch (err) { if (!err.userMessage) throw err; return send({ type: "error", message: err.userMessage, about: "store" }); }
@@ -267,7 +277,11 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
         case "intent": {          // "what do I pay, and where?" before a SOL payment
           if (!escrow) return;
           let lamports = null;
-          if (msg.pack !== undefined) lamports = account && coins && coins.packs[msg.pack] ? coins.packs[msg.pack].lamports : null;
+          if (msg.pack !== undefined) {
+            const pack = account && coins && coins.packs[msg.pack];
+            if (pack && !(await coins.mayBuy(account, msg.pack))) return send({ type: "error", message: "The welcome offer is for your first purchase only.", about: "intent" });
+            lamports = pack ? packLamports(pack) : null;
+          }
           else if (msg.room) lamports = entry && entry.room.escrowed && entry.room.currency === "SOL" ? entry.room.units : null;
           else if (msg.code !== undefined) { const info = manager.lookup(msg.code); lamports = info.escrowed && info.currency === "SOL" ? info.units : null; }
           else { const stake = cleanStake(msg.stake); lamports = stake && Math.round(stake * 1e9); }
@@ -290,12 +304,12 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
           const currency = ["SOL", "USDC", "GC", "SC"].includes(msg.currency) ? msg.currency : cryptoStakes ? "SOL" : "GC";
           if (COIN(currency) && !coins) return fail("Coin games aren't available right now.");
           if (!COIN(currency) && !cryptoStakes) return fail("Rooms are played for Gold Coins or Sweeps Coins.");
-          const stake = COIN(currency) ? cleanCoinStake(msg.stake) : cleanStake(msg.stake);
+          const stake = COIN(currency) ? cleanCoinStake(msg.stake, currency) : cleanStake(msg.stake);
           const w = who();
           if (!COIN(currency) && !w.wallet) return fail("Connect a wallet first.");
-          if (stake === null) return fail(COIN(currency) ? "Enter a whole number of coins to stake." : "Enter a stake between 0.01 and 1000.");
+          if (stake === null) return fail(currency === "GC" ? "Enter a whole number of Gold Coins to stake." : currency === "SC" ? "Enter a Sweeps Coin stake from 0.01 to 10,000." : "Enter a stake between 0.01 and 1000.");
           if ((COIN(currency) || (escrow && currency === "SOL")) &&
-              !(await takeStake(w, currency, COIN(currency) ? stake : Math.round(stake * 1e9), "deposit"))) return;
+              !(await takeStake(w, currency, unitsFor(currency, stake), "deposit"))) return;
           const r = msg.type === "create"
             ? manager.create(w, { stake, currency, mode: msg.mode })
             : manager.findMatch(w, { stake, currency });

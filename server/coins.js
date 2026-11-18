@@ -2,25 +2,28 @@
    Gold Coins (GC) are bought and played for fun; they never cash out.
    Sweeps Coins (SC) are never sold: they come free (on sign-up, once a day, and as a bonus with a
    Gold Coin pack) and are what players win from each other in SC rooms.
-   Every change to a balance is one row in `ledger`, written in the same transaction as the balance. */
+   Every change to a balance is one row in `ledger`, written in the same transaction as the balance.
+   Amounts are stored in whole units: Gold Coins as coins, Sweeps Coins in cents (UNIT.SC = 100 to a coin). */
 const crypto = require("crypto");
 const { promisify } = require("util");
 const scrypt = promisify(crypto.scrypt);
 
 const CURRENCIES = ["GC", "SC"];
-const WELCOME = { GC: 10000, SC: 2 };
-const DAILY = { GC: 2000, SC: 1 };
+const UNIT = { GC: 1, SC: 100 };                // stored units per coin
+const WELCOME = { GC: 10000, SC: 100 };         // in units: 10,000 GC and 1 SC
+const DAILY = { GC: 2000, SC: 30 };             // in units: 2,000 GC and 0.30 SC
+const SC_RAKE = 0.1;                            // the house keeps 10% of every Sweeps Coin pot a player wins
 const SESSION_DAYS = 30;
-/* Gold Coin packs, paid in SOL through the escrow, cheapest first. The Sweeps Coins are a free bonus,
-   not what is bought, so they stay below the pack's price. */
+/* Gold Coin packs, priced in dollars and charged in SOL at checkout, cheapest first. `sc` is whole
+   Sweeps Coins given free with the pack (1 SC is meant to redeem for $1), kept well under the price.
+   `firstOnly` packs can only be an account's first purchase. */
 const PACKS = {
-  mini: { name: "Kick-off", gc: 5000, sc: 5, lamports: 0.025e9 },
-  starter: { name: "Starter", gc: 10000, sc: 10, lamports: 0.05e9 },
-  plus: { name: "Hat-trick", gc: 30000, sc: 30, lamports: 0.12e9, tag: "Most popular" },
-  pro: { name: "Pro", gc: 60000, sc: 55, lamports: 0.25e9 },
-  mega: { name: "Golden Boot", gc: 150000, sc: 140, lamports: 0.6e9, tag: "Best value" }
+  welcome: { name: "Welcome offer", usd: 1.99, gc: 5000, sc: 1, firstOnly: true, tag: "First purchase only" },
+  starter: { name: "Starter", usd: 4.99, gc: 5000, sc: 2 },
+  plus: { name: "Hat-trick", usd: 9.99, gc: 12000, sc: 4, tag: "Most popular" },
+  pro: { name: "Pro", usd: 19.99, gc: 25000, sc: 8 },
+  mega: { name: "Golden Boot", usd: 49.99, gc: 70000, sc: 18, tag: "Best value" }
 };
-const FIRST_BONUS = 0.5;          // a player's first pack comes with 50% more Gold Coins
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS accounts (
@@ -52,7 +55,8 @@ CREATE TABLE IF NOT EXISTS purchases (
   account_id INTEGER NOT NULL REFERENCES accounts(id),
   pack TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);`;
+);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);`;
 
 const playerError = message => Object.assign(new Error(message), { userMessage: message });
 /* Turns Postgres's duplicate-key error into a message for the player */
@@ -74,6 +78,14 @@ async function passwordMatches(password, stored) {
 async function createCoins(pool) {
   const onChange = id => api.onChange(id);
   await pool.query(SCHEMA);
+  // Sweeps Coins used to be stored as whole coins; they are cents now. Converts an older database once.
+  await tx(async client => {
+    const done = await client.query("SELECT value FROM meta WHERE key = 'sc_units'");
+    if (done.rows.length) return;
+    await client.query("UPDATE accounts SET sc = sc * 100");
+    await client.query("UPDATE ledger SET delta = delta * 100, balance = balance * 100 WHERE currency = 'SC'");
+    await client.query("INSERT INTO meta (key, value) VALUES ('sc_units', 'cents')");
+  });
 
   /* Runs fn(client) in one transaction */
   async function tx(fn) {
@@ -115,6 +127,7 @@ async function createCoins(pool) {
 
   const api = {
     packs: PACKS,
+    unit: UNIT,
     onChange: () => {},
 
     async register(username, password) {
@@ -176,21 +189,27 @@ async function createCoins(pool) {
     async creditPack(id, packId, signature) {
       const pack = PACKS[packId];
       if (!pack) throw playerError("There is no such pack.");
-      const extra = await tx(async client => {
+      await tx(async client => {
         // Locking the account makes two payments at once count as a first purchase only once
         await client.query("SELECT id FROM accounts WHERE id = $1 FOR UPDATE", [id]);
         const first = Number((await client.query("SELECT COUNT(*) AS n FROM purchases WHERE account_id = $1", [id])).rows[0].n) === 0;
+        if (pack.firstOnly && !first) throw playerError("The welcome offer is for your first purchase only.");
         await unique(client.query(
           "INSERT INTO purchases (signature, account_id, pack) VALUES ($1, $2, $3)",
           [signature, id, packId]), "That payment has already been used.");
-        await move(client, id, "GC", pack.gc, "purchase", signature);
-        await move(client, id, "SC", pack.sc, "purchase-bonus", signature);
-        const bonus = first ? Math.round(pack.gc * FIRST_BONUS) : 0;
-        if (bonus) await move(client, id, "GC", bonus, "first-purchase-bonus", signature);
-        return bonus;
+        await move(client, id, "GC", pack.gc * UNIT.GC, "purchase", signature);
+        await move(client, id, "SC", pack.sc * UNIT.SC, "purchase-bonus", signature);
       });
       onChange(id);
-      return { ...pack, extra };
+      return pack;
+    },
+
+    /* Whether this account may still buy a pack (the welcome offer only before any other purchase) */
+    async mayBuy(id, packId) {
+      const pack = PACKS[packId];
+      if (!pack) return false;
+      if (!pack.firstOnly) return true;
+      return Number((await pool.query("SELECT COUNT(*) AS n FROM purchases WHERE account_id = $1", [id])).rows[0].n) === 0;
     },
 
     /* The account's packs, newest first */
@@ -207,10 +226,12 @@ async function createCoins(pool) {
       return true;
     },
 
-    /* The game's bank for one coin: the same pay() the SOL escrow has, paying into accounts. No fee. */
+    /* The game's bank for one coin: the same pay() the SOL escrow has, paying into accounts. No network
+       fee; Sweeps Coin pots keep the house cut (rake), which is the operator's margin on the prizes. */
     bank(currency) {
       return {
         fee: 0,
+        rake: currency === "SC" ? SC_RAKE : 0,
         currency,
         async pay(transfers) {
           const ref = "match-" + crypto.randomBytes(6).toString("hex");
@@ -227,4 +248,4 @@ async function createCoins(pool) {
   return api;
 }
 
-module.exports = { createCoins, PACKS, WELCOME, DAILY, FIRST_BONUS };
+module.exports = { createCoins, PACKS, WELCOME, DAILY, UNIT, SC_RAKE };

@@ -3,7 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const WebSocket = require("ws");
-const { createCoins, WELCOME, DAILY, PACKS, FIRST_BONUS } = require("../server/coins");
+const { createCoins, WELCOME, DAILY, PACKS, UNIT, SC_RAKE } = require("../server/coins");
 const { createServer } = require("../server");
 
 async function freshPool() {
@@ -69,22 +69,38 @@ test("coins: the daily claim works once a day, and a balance can't be overspent"
   await ledgerMatches(pool);
 });
 
-test("coins: a paid pack credits Gold Coins plus its free Sweeps Coins, once per payment", async () => {
+test("coins: packs credit Gold Coins plus free Sweeps Coins, once per payment; the welcome offer only first", async () => {
   const pool = await freshPool(), coins = await createCoins(pool);
   const { account } = await coins.register("dani", "password123");
   assert.equal(account.firstPurchase, true);
-  const first = await coins.creditPack(account.id, "starter", "sig-1");
-  assert.equal(first.extra, PACKS.starter.gc * FIRST_BONUS, "the first pack comes with 50% more Gold Coins");
-  await assert.rejects(coins.creditPack(account.id, "starter", "sig-1"), /already been used/);
+  assert.equal(await coins.mayBuy(account.id, "welcome"), true);
+  await coins.creditPack(account.id, "welcome", "sig-1");
+  await assert.rejects(coins.creditPack(account.id, "welcome", "sig-1"), /first purchase only|already been used/);
   await assert.rejects(coins.creditPack(account.id, "gold-bars", "sig-2"), /no such pack/);
   const a = await coins.account(account.id);
   assert.equal(a.firstPurchase, false);
-  assert.deepEqual([a.GC, a.SC], [WELCOME.GC + PACKS.starter.gc * (1 + FIRST_BONUS), WELCOME.SC + PACKS.starter.sc]);
-  const second = await coins.creditPack(account.id, "mega", "sig-3");
-  assert.equal(second.extra, 0, "only the first pack has the bonus");
-  assert.deepEqual((await coins.purchases(account.id)).map(p => p.pack).sort(), ["mega", "starter"]);
-  const rows = await pool.query("SELECT reason FROM ledger WHERE account_id = $1 AND reason LIKE '%purchase%' AND ref = 'sig-1' ORDER BY id", [account.id]);
-  assert.deepEqual(rows.rows.map(r => r.reason), ["purchase", "purchase-bonus", "first-purchase-bonus"], "the ledger shows the SC as a bonus, not a sale");
+  assert.equal(await coins.mayBuy(account.id, "welcome"), false, "the welcome offer is gone after the first purchase");
+  assert.deepEqual([a.GC, a.SC], [WELCOME.GC + PACKS.welcome.gc, WELCOME.SC + PACKS.welcome.sc * UNIT.SC]);
+  await assert.rejects(coins.creditPack(account.id, "welcome", "sig-4"), /first purchase only/);
+  await coins.creditPack(account.id, "mega", "sig-3");
+  assert.deepEqual((await coins.purchases(account.id)).map(p => p.pack).sort(), ["mega", "welcome"]);
+  const rows = await pool.query("SELECT reason FROM ledger WHERE account_id = $1 AND ref = 'sig-1' ORDER BY id", [account.id]);
+  assert.deepEqual(rows.rows.map(r => r.reason), ["purchase", "purchase-bonus"], "the ledger shows the SC as a bonus, not a sale");
+  for (const p of Object.values(PACKS)) assert.ok(p.sc < p.usd * 0.6, `${p.name}: the free SC stay under 60% of the price`);
+  await ledgerMatches(pool);
+});
+
+// Real Postgres only: pg-mem can't run the CREATE TABLE IF NOT EXISTS setup twice on one database
+test("coins: an older database's whole Sweeps Coins become cents, once", { skip: !process.env.TEST_DATABASE_URL && "needs TEST_DATABASE_URL" }, async () => {
+  const pool = await freshPool(), coins = await createCoins(pool);
+  const { account } = await coins.register("eli", "password123");
+  // Pretend the database is from before cents: whole coins and no conversion mark
+  await pool.query("UPDATE accounts SET sc = 3 WHERE id = $1", [account.id]);
+  await pool.query("UPDATE ledger SET delta = 3, balance = 3 WHERE currency = 'SC' AND account_id = $1", [account.id]);
+  await pool.query("DELETE FROM meta");
+  await createCoins(pool);
+  await createCoins(pool);                       // a second start changes nothing
+  assert.equal((await coins.account(account.id)).SC, 300);
   await ledgerMatches(pool);
 });
 
@@ -149,15 +165,18 @@ test("coin rooms: stakes come from accounts, need no wallet, and the winner take
   ben.send({ type: "register", username: "ben", password: "password123" });
   await ben.next("account", m => m.token);
 
-  // More than the balance is refused; a fraction of a coin is refused
-  ana.send({ type: "create", name: "Ana", stake: WELCOME.SC + 1, currency: "SC" });
-  assert.match((await ana.next("error")).message, /don't have 3 Sweeps Coins/);
+  // More than the balance is refused; less than a cent is refused; Gold Coins are whole
   ana.send({ type: "create", name: "Ana", stake: 1.5, currency: "SC" });
-  assert.match((await ana.next("error")).message, /whole number/);
+  assert.match((await ana.next("error")).message, /don't have 1.5 Sweeps Coins/);
+  ana.send({ type: "create", name: "Ana", stake: 0.005, currency: "SC" });
+  assert.match((await ana.next("error")).message, /0.01 to 10,000/);
+  ana.send({ type: "create", name: "Ana", stake: 10.5, currency: "GC" });
+  assert.match((await ana.next("error")).message, /whole number of Gold Coins/);
 
-  ana.send({ type: "create", mode: "h2h", name: "Ana", stake: 2, currency: "SC" });
+  ana.send({ type: "create", mode: "h2h", name: "Ana", stake: WELCOME.SC / UNIT.SC, currency: "SC" });
   const room = await ana.next("room");
   assert.equal(room.escrowed, true);
+  assert.equal(room.rake, SC_RAKE);
   assert.equal((await ana.next("account", m => m.account && m.account.SC === 0)).account.SC, 0, "the stake left Ana's balance");
 
   ben.send({ type: "join", code: room.code, name: "Ben" });
@@ -174,9 +193,12 @@ test("coin rooms: stakes come from accounts, need no wallet, and the winner take
   await ana.next("payout", m => m.tx);
   await new Promise(r => setTimeout(r, 100));
   const bal = (await pool.query("SELECT username, sc FROM accounts ORDER BY username")).rows.map(r => Number(r.sc));
-  assert.equal(bal[0] + bal[1], 2 * WELCOME.SC, "no coins created or lost");
-  if (results.outcome === "refund") assert.deepEqual(bal, [WELCOME.SC, WELCOME.SC]);
-  else assert.deepEqual(bal.sort(), [0, 2 * WELCOME.SC].sort(), "the winner holds both stakes");
+  if (results.outcome === "refund") assert.deepEqual(bal, [WELCOME.SC, WELCOME.SC], "a draw is refunded in full, no house cut");
+  else {
+    const pot = 2 * WELCOME.SC, winnings = pot - Math.floor(pot * SC_RAKE);
+    assert.deepEqual(bal.sort((x, y) => x - y), [0, winnings], "the winner gets the pot less the 10% house cut");
+    assert.equal(results.standings[0].payout, winnings / UNIT.SC, "the results screen shows what was really paid");
+  }
 
   // Signing in again on a new connection resumes the account
   const again = await client(port, "coin-ana-2");
