@@ -33,6 +33,15 @@ Set `DATABASE_URL` to a Postgres database to switch on accounts and coin games. 
 
 Tests run on an in-memory Postgres. To run the coin tests on a real one: `TEST_DATABASE_URL=postgres://... node --test --test-concurrency=1 test/coins.test.js` (it drops the coin tables first).
 
+## Cashing out Sweeps Coins (off until legally cleared)
+
+Built but switched off. Set `REDEMPTION=1` only once a lawyer has cleared cash-outs for the places you serve.
+
+- 1 SC is meant to be worth $1, paid in USDC to a Solana wallet. The minimum is 50 SC (`REDEEM_MIN`).
+- Free Sweeps Coins (sign-up, daily, pack bonus) must be staked in a match that ends with a winner before they can be cashed out. Winnings can be cashed out at once.
+- A player must be marked verified (identity and age checked) before their first cash-out.
+- Requests take the coins off the balance and wait for a person. Review them with `DATABASE_URL=... node scripts/redemptions.js list`, then `paid <id> <transaction>` after sending the USDC, or `reject <id> <reason>` to return the coins. `verify <username>` marks an identity as checked.
+
 ## Real stakes on devnet (optional)
 
 By default every stake is simulated. Set `ESCROW_SECRET` to switch SOL rooms to real transfers of test SOL on Solana devnet:
@@ -60,7 +69,8 @@ To try it alone, open two browser windows (or one normal and one private). Creat
 server/index.js      HTTP static server + WebSocket endpoint at /ws
 server/game.js       rooms, matchmaking, rounds, scoring, payouts
 server/escrow.js     on-chain stake payments, payouts and refunds
-server/coins.js      accounts, Gold and Sweeps Coin balances, the ledger, packs
+server/coins.js      accounts, Gold and Sweeps Coin balances, the ledger, packs, cash-outs
+scripts/redemptions.js  reviewing cash-outs and marking identities checked
 server/questions.js  question bank (server-only)
 public/index.html    the landing page (built with the design-taste-frontend skill)
 public/play/         the game itself (index.html, script.js, style.css), at /play/

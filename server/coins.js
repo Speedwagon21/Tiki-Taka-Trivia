@@ -13,6 +13,10 @@ const UNIT = { GC: 1, SC: 100 };                // stored units per coin
 const WELCOME = { GC: 10000, SC: 100 };         // in units: 10,000 GC and 1 SC
 const DAILY = { GC: 2000, SC: 30 };             // in units: 2,000 GC and 0.30 SC
 const SC_RAKE = 0.1;                            // the house keeps 10% of every Sweeps Coin pot a player wins
+const REDEEM_MIN = 5000;                        // in units: 50 SC is the least a player can cash out
+/* Free Sweeps Coins (sign-up, daily, pack bonus) must be staked in a finished match once before they can be
+   cashed out; this tracks how much of a balance is still waiting for that. */
+const FREE_REASONS = ["welcome", "daily", "purchase-bonus"];
 const SESSION_DAYS = 30;
 /* Gold Coin packs, priced in dollars and charged in SOL at checkout, cheapest first. `sc` is whole
    Sweeps Coins given free with the pack (1 SC is meant to redeem for $1), kept well under the price.
@@ -56,7 +60,19 @@ CREATE TABLE IF NOT EXISTS purchases (
   pack TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);`;
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS sc_locked BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS verified BOOLEAN NOT NULL DEFAULT false;
+CREATE TABLE IF NOT EXISTS redemptions (
+  id SERIAL PRIMARY KEY,
+  account_id INTEGER NOT NULL REFERENCES accounts(id),
+  amount BIGINT NOT NULL CHECK (amount > 0),
+  wallet TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  note TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);`;
 
 const playerError = message => Object.assign(new Error(message), { userMessage: message });
 /* Turns Postgres's duplicate-key error into a message for the player */
@@ -86,6 +102,13 @@ async function createCoins(pool) {
     await client.query("UPDATE ledger SET delta = delta * 100, balance = balance * 100 WHERE currency = 'SC'");
     await client.query("INSERT INTO meta (key, value) VALUES ('sc_units', 'cents')");
   });
+  // Coins held before play-through existed count as free coins not yet played
+  await tx(async client => {
+    const done = await client.query("SELECT value FROM meta WHERE key = 'playthrough'");
+    if (done.rows.length) return;
+    await client.query("UPDATE accounts SET sc_locked = sc");
+    await client.query("INSERT INTO meta (key, value) VALUES ('playthrough', 'on')");
+  });
 
   /* Runs fn(client) in one transaction */
   async function tx(fn) {
@@ -113,6 +136,9 @@ async function createCoins(pool) {
     await client.query(
       "INSERT INTO ledger (account_id, currency, delta, balance, reason, ref) VALUES ($1, $2, $3, $4, $5, $6)",
       [accountId, currency, delta, balance, reason, ref]);
+    if (currency === "SC" && FREE_REASONS.includes(reason)) {
+      await client.query("UPDATE accounts SET sc_locked = sc_locked + $1 WHERE id = $2", [delta, accountId]);
+    }
     return balance;
   }
 
@@ -164,12 +190,69 @@ async function createCoins(pool) {
     },
 
     async account(id) {
-      const r = await pool.query("SELECT id, username, gc, sc, last_daily FROM accounts WHERE id = $1", [id]);
+      const r = await pool.query("SELECT id, username, gc, sc, sc_locked, verified, last_daily FROM accounts WHERE id = $1", [id]);
       if (!r.rows.length) return null;
       const a = r.rows[0];
       const bought = (await pool.query("SELECT COUNT(*) AS n FROM purchases WHERE account_id = $1", [id])).rows[0];
       const last = a.last_daily && (a.last_daily instanceof Date ? a.last_daily.toISOString() : String(a.last_daily)).slice(0, 10);
-      return { id: a.id, username: a.username, GC: Number(a.gc), SC: Number(a.sc), dailyReady: last !== today(), firstPurchase: Number(bought.n) === 0 };
+      return {
+        id: a.id, username: a.username, GC: Number(a.gc), SC: Number(a.sc), dailyReady: last !== today(), firstPurchase: Number(bought.n) === 0,
+        redeemable: Math.max(0, Number(a.sc) - Number(a.sc_locked)), verified: Boolean(a.verified)
+      };
+    },
+
+    /* Players staked these Sweeps Coins in a match that finished with a winner: that counts as playing them through.
+       stakes: [{ to: accountId, amount: units }] */
+    async played(stakes) {
+      for (const s of stakes) {
+        await tx(async client => {
+          const r = await client.query("SELECT sc_locked FROM accounts WHERE id = $1 FOR UPDATE", [s.to]);
+          await client.query("UPDATE accounts SET sc_locked = $1 WHERE id = $2", [Math.max(0, Number(r.rows[0].sc_locked) - s.amount), s.to]);
+        });
+        onChange(s.to);
+      }
+    },
+
+    /* Asks to cash out Sweeps Coins. The coins leave the balance now and wait for a person to pay or reject
+       the request (scripts/redemptions.js). Amount in units (cents). */
+    async requestRedemption(id, amount, wallet) {
+      if (!Number.isInteger(amount) || amount < REDEEM_MIN) throw playerError(`The least you can cash out is ${REDEEM_MIN / UNIT.SC} Sweeps Coins.`);
+      const rid = await tx(async client => {
+        const r = await client.query("SELECT sc, sc_locked, verified FROM accounts WHERE id = $1 FOR UPDATE", [id]);
+        const a = r.rows[0];
+        if (!a.verified) throw playerError("Verify your identity before cashing out.");
+        if (amount > Number(a.sc) - Number(a.sc_locked)) throw playerError("That's more than you can cash out. Free coins must be played in a match first.");
+        const ins = await client.query("INSERT INTO redemptions (account_id, amount, wallet) VALUES ($1, $2, $3) RETURNING id", [id, amount, wallet]);
+        await move(client, id, "SC", -amount, "redeem", "redeem-" + ins.rows[0].id);
+        return ins.rows[0].id;
+      });
+      onChange(id);
+      return rid;
+    },
+
+    async redemptions(id) {
+      const r = await pool.query("SELECT id, amount, wallet, status, note, created_at FROM redemptions WHERE account_id = $1 ORDER BY id DESC LIMIT 20", [id]);
+      return r.rows.map(x => ({ id: x.id, amount: Number(x.amount), wallet: x.wallet, status: x.status, note: x.note, at: new Date(x.created_at).toISOString() }));
+    },
+
+    /* For whoever reviews cash-outs: mark one paid (note: the payout's transaction), or reject it (the coins go back) */
+    async resolveRedemption(rid, status, note) {
+      if (!["paid", "rejected"].includes(status)) throw new Error("status must be paid or rejected");
+      const accountId = await tx(async client => {
+        const r = await client.query("SELECT account_id, amount, status FROM redemptions WHERE id = $1 FOR UPDATE", [rid]);
+        if (!r.rows.length || r.rows[0].status !== "pending") throw new Error(`redemption ${rid} is not pending`);
+        await client.query("UPDATE redemptions SET status = $1, note = $2, updated_at = now() WHERE id = $3", [status, note || null, rid]);
+        if (status === "rejected") await move(client, r.rows[0].account_id, "SC", Number(r.rows[0].amount), "redeem-rejected", "redeem-" + rid);
+        return r.rows[0].account_id;
+      });
+      onChange(accountId);
+    },
+
+    /* For whoever checks identities: marks an account verified, or not */
+    async setVerified(username, verified) {
+      const r = await pool.query("UPDATE accounts SET verified = $1 WHERE username = $2 RETURNING id", [verified, String(username).toLowerCase()]);
+      if (!r.rows.length) throw new Error(`no account ${username}`);
+      onChange(r.rows[0].id);
     },
 
     /* Free coins once per UTC day: the no-purchase way to get Sweeps Coins */
@@ -233,6 +316,7 @@ async function createCoins(pool) {
         fee: 0,
         rake: currency === "SC" ? SC_RAKE : 0,
         currency,
+        played: currency === "SC" ? stakes => api.played(stakes) : null,
         async pay(transfers) {
           const ref = "match-" + crypto.randomBytes(6).toString("hex");
           await tx(async client => {
@@ -248,4 +332,4 @@ async function createCoins(pool) {
   return api;
 }
 
-module.exports = { createCoins, PACKS, WELCOME, DAILY, UNIT, SC_RAKE };
+module.exports = { createCoins, PACKS, WELCOME, DAILY, UNIT, SC_RAKE, REDEEM_MIN };

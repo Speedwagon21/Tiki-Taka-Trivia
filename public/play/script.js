@@ -230,6 +230,8 @@ function handle(m) {
       sound.win();
       return;
     case "purchases": app.purchases = m.list; if (app.screen === "store") renderStore(); return;
+    case "redemptions": app.redemptions = m.list; if ($("accountDialog").open) renderAccount(); return;
+    case "redeemed": setMsg("accountMsg", "Cash-out requested. We review it and pay within a few days.", true); return;
     case "payout":
       if (app.results) { app.results.tx = m.tx || null; app.results.payoutFailed = Boolean(m.failed); renderLedger(app.results); }
       return;
@@ -253,7 +255,7 @@ function handle(m) {
       busy(false);
       if (m.about === "intent") { if (intentWaiter) intentWaiter.reject(new Error(m.message)); return; }
       if (m.about === "deposit") return setMsg(app.payMsg, m.message);
-      if (m.about === "auth") return setMsg("accountMsg", m.message);
+      if (m.about === "auth" || m.about === "redeem") return setMsg("accountMsg", m.message);
       if (m.about === "store") { busy(false); return setMsg(app.screen === "store" ? "storeMsg" : "accountMsg", m.message); }
       if (m.about === "lookup" || m.about === "join") {
         if (m.about === "lookup") app.lookup = null;
@@ -1200,16 +1202,40 @@ function renderAccount() {
   body.append(el("button", {
     className: "btn wide", type: "button", onclick: () => { $("accountDialog").close(); openStore(); }
   }, "Open the coin store"));
+  body.append(...cashOutSection(a));
   body.append(el("button", {
     className: "btn ghost wide", type: "button",
     onclick: () => { send({ type: "logout", session: store.get("tt-session") }); store.set("tt-session", ""); }
   }, "Sign out"));
 }
 
+/* Cashing out Sweeps Coins: only shown once the server has it switched on */
+function cashOutSection(a) {
+  const c = app.coins || {};
+  if (!c.redemption) return [el("p", { className: "hint" }, "Cashing out Sweeps Coins isn't open yet.")];
+  const amount = el("input", { type: "number", id: "redeemAmount", min: c.redeemMin / 100, step: "0.01", inputMode: "decimal", placeholder: String(c.redeemMin / 100) });
+  const wallet = el("input", { type: "text", id: "redeemWallet", spellcheck: false, autocomplete: "off", placeholder: "Solana wallet address", value: app.wallet && app.wallet.kind === "phantom" ? app.wallet.address : "" });
+  const list = app.redemptions || [];
+  return [
+    el("h3", { className: "list-title" }, "Cash out Sweeps Coins"),
+    el("p", { className: "hint" }, `You can cash out ${coinText("SC", a.redeemable)} (1 SC = $1 in USDC, at least ${c.redeemMin / 100} SC). Free coins count once you've played them in a match.${a.verified ? "" : " We check your identity and age before your first cash-out."}`),
+    el("label", { className: "field" }, el("span", {}, "Sweeps Coins to cash out"), amount),
+    el("label", { className: "field" }, el("span", {}, "Pay to this Solana wallet (USDC)"), wallet),
+    el("button", {
+      className: "btn wide", type: "button", disabled: a.redeemable < c.redeemMin,
+      onclick: () => { setMsg("accountMsg", ""); send({ type: "redeem", amount: Number(amount.value), wallet: wallet.value.trim() }); }
+    }, a.redeemable < c.redeemMin ? `Reach ${c.redeemMin / 100} SC to cash out` : "Request cash-out"),
+    ...(list.length ? [el("ul", { className: "players" }, ...list.map(r => el("li", {},
+      el("span", { className: "pname" }, coinText("SC", r.amount), el("em", {}, ` · ${new Date(r.at).toLocaleDateString()}`)),
+      el("span", { className: "tag" + (r.status === "paid" ? " host" : "") }, r.status === "pending" ? "Waiting for review" : r.status === "paid" ? "Paid" : "Returned"))))] : [])
+  ];
+}
+
 function openAccount() {
   setMsg("accountMsg", "");
   renderAccount();
   $("accountDialog").showModal();
+  if (app.account && app.coins && app.coins.redemption) send({ type: "redemptions" });
 }
 $("accountBtn").onclick = openAccount;
 $("accountClose").onclick = () => $("accountDialog").close();

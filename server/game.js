@@ -360,6 +360,11 @@ class Room {
       tx: this.escrowed ? null : fakeTxHash(),          // escrowed rooms get the real signature once paid
       ...result
     };
+    // A finished match with a winner plays the stakes through (a draw, which anyone can force, doesn't)
+    if (this.bank && this.bank.played && result.outcome !== "refund") {
+      this.bank.played(this.players.filter(p => p.paid).map(p => ({ to: this.manager.payee(p, this.currency), amount: p.paid })))
+        .catch(err => console.error("PLAY-THROUGH FAILED", err));
+    }
     if (this.escrowed) this.payOut(result);
     this.players = this.active;
     this.syncState();

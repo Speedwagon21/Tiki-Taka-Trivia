@@ -7,7 +7,7 @@ const { WebSocketServer, WebSocket } = require("ws");
 const { RoomManager } = require("./game");
 
 const { createEscrow } = require("./escrow");
-const { createCoins } = require("./coins");
+const { createCoins, REDEEM_MIN } = require("./coins");
 
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
 const WEB3_BUNDLE = path.join(__dirname, "..", "node_modules", "@solana", "web3.js", "lib", "index.iife.min.js");
@@ -109,6 +109,8 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
   // SOL and USDC stakes are player-funded pots, which need a gambling licence in most places, so they
   // are off whenever coins are on. gameOpts.cryptoStakes switches them back on where they are cleared.
   const cryptoStakes = Boolean(gameOpts.cryptoStakes) || !coins;
+  // Cashing out Sweeps Coins stays off until it is legally cleared: gameOpts.redemption (REDEMPTION=1) opens it
+  const redemption = Boolean(gameOpts.redemption) && Boolean(coins);
   const manager = new RoomManager(gameOpts, escrow, coins);
   const accountSockets = new Map();     // account id -> the send functions of its open connections
   const pushAccount = id => coins.account(id).then(a => (accountSockets.get(id) || []).forEach(s => s({ type: "account", account: a })));
@@ -216,7 +218,8 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
         send({
           type: "hello", resumed: Boolean(entry), escrow: escrow ? { address: escrow.address } : null, cryptoStakes,
           coins: coins ? {
-            packs: escrow ? Object.fromEntries(Object.entries(coins.packs).map(([id, p]) => [id, { ...p, lamports: packLamports(p) }])) : null
+            packs: escrow ? Object.fromEntries(Object.entries(coins.packs).map(([id, p]) => [id, { ...p, lamports: packLamports(p) }])) : null,
+            redemption, redeemMin: REDEEM_MIN
           } : null
         });
         const id = coins && await coins.resume(msg.session);
@@ -251,6 +254,21 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
           account = null;
           await coins.logout(msg.session);
           return send({ type: "account", account: null });
+        case "redeem": {          // cash out Sweeps Coins to a Solana wallet (paid by hand after review)
+          if (!coins || !account) return;
+          if (!redemption) return send({ type: "error", message: "Cashing out isn't open yet.", about: "redeem" });
+          const wallet = cleanWallet(msg.wallet);
+          const amount = cleanCoinStake(msg.amount, "SC");
+          if (!wallet) return send({ type: "error", message: "Enter the Solana wallet address to pay.", about: "redeem" });
+          if (amount === null) return send({ type: "error", message: "Enter how many Sweeps Coins to cash out.", about: "redeem" });
+          try { await coins.requestRedemption(account, unitsFor("SC", amount), wallet); }
+          catch (err) { if (!err.userMessage) throw err; return send({ type: "error", message: err.userMessage, about: "redeem" }); }
+          send({ type: "redeemed" });
+          return send({ type: "redemptions", list: await coins.redemptions(account) });
+        }
+        case "redemptions":
+          if (!coins || !account) return;
+          return send({ type: "redemptions", list: await coins.redemptions(account) });
         case "purchases":
           if (!coins || !account) return;
           return send({ type: "purchases", list: await coins.purchases(account) });
@@ -407,7 +425,8 @@ if (require.main === module) {
     }
     console.log(coins ? "Accounts and coins are on" : "No DATABASE_URL set: no accounts or coin games");
     // CRYPTO_STAKES=1 brings back SOL and USDC rooms next to the coins (only where a lawyer has cleared them)
-    const { server, stop } = createServer({ cryptoStakes: process.env.CRYPTO_STAKES === "1" }, {}, escrow, coins);
+    // REDEMPTION=1 opens cashing out Sweeps Coins (only once a lawyer has cleared it)
+    const { server, stop } = createServer({ cryptoStakes: process.env.CRYPTO_STAKES === "1", redemption: process.env.REDEMPTION === "1" }, {}, escrow, coins);
     server.listen(port, () => console.log(`Tiki-Taka Trivia running on http://localhost:${port}`));
     // Hosting platforms send SIGTERM on redeploy: close sockets cleanly so clients reconnect fast
     process.on("SIGTERM", () => stop().then(() => process.exit(0)));

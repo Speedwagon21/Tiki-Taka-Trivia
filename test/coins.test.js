@@ -3,14 +3,14 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const WebSocket = require("ws");
-const { createCoins, WELCOME, DAILY, PACKS, UNIT, SC_RAKE } = require("../server/coins");
+const { createCoins, WELCOME, DAILY, PACKS, UNIT, SC_RAKE, REDEEM_MIN } = require("../server/coins");
 const { createServer } = require("../server");
 
 async function freshPool() {
   if (process.env.TEST_DATABASE_URL) {
     const { Pool } = require("pg");
     const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
-    await pool.query("DROP TABLE IF EXISTS purchases, ledger, sessions, accounts");
+    await pool.query("DROP TABLE IF EXISTS redemptions, purchases, ledger, sessions, accounts, meta");
     return pool;
   }
   const { newDb } = require("pg-mem");
@@ -138,9 +138,9 @@ function client(port, key) {
   }));
 }
 
-async function coinServer() {
+async function coinServer(opts = {}) {
   const pool = await freshPool(), coins = await createCoins(pool);
-  const { server, stop } = createServer(FAST, {}, null, coins);
+  const { server, stop } = createServer({ ...FAST, ...opts }, {}, null, coins);
   await new Promise(r => server.listen(0, r));
   return { pool, coins, port: server.address().port, stop };
 }
@@ -200,6 +200,12 @@ test("coin rooms: stakes come from accounts, need no wallet, and the winner take
     assert.equal(results.standings[0].payout, winnings / UNIT.SC, "the results screen shows what was really paid");
   }
 
+  // A match with a winner plays the staked free coins through; Ana and Ben staked all their locked coins
+  if (results.outcome !== "refund") {
+    const locked = (await pool.query("SELECT sc_locked FROM accounts ORDER BY username")).rows.map(r => Number(r.sc_locked));
+    assert.deepEqual(locked, [0, 0], "the staked free coins count as played");
+  }
+
   // Signing in again on a new connection resumes the account
   const again = await client(port, "coin-ana-2");
   again.send({ type: "hello" });
@@ -241,4 +247,71 @@ test("coin rooms: leaving a waiting room or cancelling a search gives the coins 
   cy.close();
   await ledgerMatches(pool);
   await stop();
+});
+
+/* ---- cashing out Sweeps Coins ---- */
+
+test("cash-out: free coins must be played first, then a verified player can cash out 50 SC or more", async () => {
+  const pool = await freshPool(), coins = await createCoins(pool);
+  const { account } = await coins.register("fay", "password123");
+  await coins.claimDaily(account.id);
+  let a = await coins.account(account.id);
+  assert.equal(a.redeemable, 0, "free sign-up and daily coins are not redeemable yet");
+  await coins.creditPack(account.id, "mega", "sig-fay");
+  assert.equal((await coins.account(account.id)).redeemable, 0, "the free coins with a pack are not redeemable yet either");
+
+  // Winnings are redeemable at once; staked free coins unlock once played
+  await coins.bank("SC").pay([{ to: account.id, amount: 6000, reason: "win" }]);
+  assert.equal((await coins.account(account.id)).redeemable, 6000);
+  await coins.played([{ to: account.id, amount: 100 }]);
+  a = await coins.account(account.id);
+  assert.equal(a.redeemable, 6100);
+
+  await assert.rejects(coins.requestRedemption(account.id, 6000, "WaLLet1111111111111111111111111111111111"), /Verify your identity/);
+  await coins.setVerified("fay", true);
+  await assert.rejects(coins.requestRedemption(account.id, REDEEM_MIN - 1, "w"), /least you can cash out is 50/);
+  await assert.rejects(coins.requestRedemption(account.id, 6200, "w"), /more than you can cash out/);
+
+  const before = (await coins.account(account.id)).SC;
+  const rid = await coins.requestRedemption(account.id, 5000, "WaLLet1111111111111111111111111111111111");
+  assert.equal((await coins.account(account.id)).SC, before - 5000, "the coins leave the balance while the request waits");
+  assert.deepEqual((await coins.redemptions(account.id)).map(r => [r.amount, r.status]), [[5000, "pending"]]);
+
+  await coins.resolveRedemption(rid, "rejected", "wallet looks wrong");
+  assert.equal((await coins.account(account.id)).SC, before, "a rejected cash-out gives the coins back");
+  await assert.rejects(coins.resolveRedemption(rid, "paid", "tx"), /not pending/);
+
+  const rid2 = await coins.requestRedemption(account.id, 5000, "WaLLet1111111111111111111111111111111111");
+  await coins.resolveRedemption(rid2, "paid", "5xTransaction");
+  assert.equal((await coins.account(account.id)).SC, before - 5000);
+  assert.deepEqual((await coins.redemptions(account.id)).map(r => r.status), ["paid", "rejected"]);
+  await ledgerMatches(pool);
+});
+
+test("cash-out: switched off unless the server opens it", async () => {
+  const off = await coinServer();
+  const c = await client(off.port, "redeem-off");
+  assert.equal(c.inbox.find(m => m.type === "hello").coins.redemption, false);
+  c.send({ type: "register", username: "gus", password: "password123" });
+  await c.next("account", m => m.token);
+  c.send({ type: "redeem", amount: 50, wallet: "7xQ9aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
+  assert.match((await c.next("error")).message, /isn't open yet/);
+  c.close(); await off.stop();
+
+  const on = await coinServer({ redemption: true });
+  const d = await client(on.port, "redeem-on");
+  assert.equal(d.inbox.find(m => m.type === "hello").coins.redemption, true);
+  d.send({ type: "register", username: "hal", password: "password123" });
+  const acct = (await d.next("account", m => m.token)).account;
+  await on.coins.setVerified("hal", true);
+  await on.coins.bank("SC").pay([{ to: acct.id, amount: 5500, reason: "win" }]);
+  d.send({ type: "redeem", amount: 50, wallet: "not a wallet" });
+  assert.match((await d.next("error")).message, /Solana wallet/);
+  d.send({ type: "redeem", amount: 50, wallet: "7xQ9aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
+  await d.next("redeemed");
+  const list = await d.next("redemptions");
+  assert.deepEqual(list.list.map(r => [r.amount, r.status]), [[5000, "pending"]]);
+  d.close();
+  await ledgerMatches(on.pool);
+  await on.stop();
 });
