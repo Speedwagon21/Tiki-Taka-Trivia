@@ -113,8 +113,13 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
   // Cashing out Sweeps Coins stays off until it is legally cleared: gameOpts.redemption (REDEMPTION=1) opens it
   const redemption = Boolean(gameOpts.redemption) && Boolean(coins);
   const manager = new RoomManager(gameOpts, escrow, coins);
+  if (coins) manager.onMatch = list => coins.recordMatch(list);      // finished matches feed player card ratings
   const accountSockets = new Map();     // account id -> the send functions of its open connections
-  const pushAccount = id => coins.account(id).then(a => (accountSockets.get(id) || []).forEach(s => s({ type: "account", account: a })));
+  const looks = new Map();               // account id -> what it wears and its card rating, kept fresh for rooms
+  const pushAccount = id => coins.account(id).then(a => {
+    if (a) looks.set(id, a.look); else looks.delete(id);
+    (accountSockets.get(id) || []).forEach(s => s({ type: "account", account: a }));
+  });
   if (coins) coins.onChange = id => { pushAccount(id).catch(err => console.error("account push failed:", err)); };
   const authTries = new Map();          // address (or socket) -> { start, count }
   const server = http.createServer((req, res) => serveStatic(req, res, escrow ? escrow.rpcUrl : undefined));
@@ -141,7 +146,6 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
       if (ip) perIp.get(ip) > 1 ? perIp.set(ip, perIp.get(ip) - 1) : (perIp.delete(ip), lookups.delete(ip));
     });
     let key = null, account = null;     // account: the signed-in account's id
-    let look = null;                     // what the signed-in player wears in rooms (item ids)
     ws.isAlive = true;
     ws.on("pong", () => { ws.isAlive = true; });
     const send = msg => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); };
@@ -201,7 +205,7 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
       if (!accountSockets.has(id)) accountSockets.set(id, new Set());
       accountSockets.get(id).add(send);
       const a = await coins.account(id);
-      look = a.look;
+      looks.set(id, a.look);
       send({ type: "account", account: a, ...(token ? { token } : {}) });
     };
 
@@ -240,7 +244,7 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
       if (!key) return fail("Say hello first.");
 
       const who = () => ({
-        key, send, msg, name: cleanName(msg.name), wallet: cleanWallet(msg.wallet), recent: cleanRecent(msg.recent), look: account ? look : null
+        key, send, msg, name: cleanName(msg.name), wallet: cleanWallet(msg.wallet), recent: cleanRecent(msg.recent), look: (account && looks.get(account)) || null
       });
       const entry = manager.find(key);
 
@@ -293,7 +297,8 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
             if (msg.type === "buyItem") await coins.buyItem(account, String(msg.item));
             else await coins.equip(account, String(msg.kind), msg.item == null ? null : String(msg.item));
           } catch (err) { if (!err.userMessage) throw err; return send({ type: "error", message: err.userMessage, about: "items" }); }
-          look = (await coins.account(account)).look;
+          const look = (await coins.account(account)).look;
+          looks.set(account, look);
           if (entry) { entry.player.look = look; entry.room.syncState(); }     // the room sees the change at once
           return send({ type: msg.type === "buyItem" ? "itemBought" : "equipped", item: msg.item ?? null });
         }

@@ -467,54 +467,91 @@ test("compliance over the connection: no Sweeps Coin play or cash-out from a blo
   }
 });
 
-/* ---- Gold Coin items ---- */
+/* ---- Gold Coin items and player cards ---- */
 
-test("items: Gold Coins buy an avatar, frame or name colour once, and only owned items can be worn", async () => {
+test("items: Gold Coins buy a card, celebration or name style once, and only owned items can be worn", async () => {
   const pool = await freshPool(), coins = await createCoins(pool);
   const { account } = await coins.register("ola", "password123", true);
   await assert.rejects(coins.buyItem(account.id, "no-such-thing"), /no such item/);
   await assert.rejects(coins.buyItem(account.id, "__proto__"), /no such item/);
-  await assert.rejects(coins.equip(account.id, "avatar", "av-goat"), /Buy it first/);
-  await coins.buyItem(account.id, "av-goat");                                  // 6,000 of the 10,000 welcome GC
-  await assert.rejects(coins.buyItem(account.id, "av-goat"), /already own/);
-  await assert.rejects(coins.buyItem(account.id, "fr-gold"), /need 8,000 Gold Coins/);
+  await assert.rejects(coins.equip(account.id, "card", "card-gold"), /Buy it first/);
+  await coins.buyItem(account.id, "card-gold");                                 // 5,000 of the 10,000 welcome GC
+  await assert.rejects(coins.buyItem(account.id, "card-gold"), /already own/);
+  await assert.rejects(coins.buyItem(account.id, "cel-fireworks"), /need 6,000 Gold Coins/);
   let a = await coins.account(account.id);
-  assert.equal(a.GC, 4000, "a refused purchase takes nothing");
-  assert.deepEqual(a.owned, ["av-goat"]);
-  await assert.rejects(coins.equip(account.id, "frame", "av-goat"), /no such item/, "an avatar isn't a frame");
+  assert.equal(a.GC, 5000, "a refused purchase takes nothing");
+  assert.deepEqual(a.owned, ["card-gold"]);
+  await assert.rejects(coins.equip(account.id, "celebration", "card-gold"), /no such item/, "a card isn't a celebration");
   await assert.rejects(coins.equip(account.id, "hat", null), /no such item/);
-  await coins.equip(account.id, "avatar", "av-goat");
-  assert.equal((await coins.account(account.id)).look.avatar, "av-goat");
-  await coins.equip(account.id, "avatar", null);
-  assert.equal((await coins.account(account.id)).look.avatar, null);
-  assert.deepEqual((await coins.exportData(account.id)).items.map(i => i.item), ["av-goat"]);
+  await coins.equip(account.id, "card", "card-gold");
+  assert.equal((await coins.account(account.id)).look.card, "card-gold");
+  await coins.equip(account.id, "card", null);
+  assert.equal((await coins.account(account.id)).look.card, null);
+  assert.deepEqual((await coins.exportData(account.id)).items.map(i => i.item), ["card-gold"]);
   await coins.pause(account.id, "break-1");
   await assert.rejects(coins.buyItem(account.id, "nc-green"), /taking a break/);
   await ledgerMatches(pool);
 });
 
-test("items: what a player wears shows on everyone's room screen, and changes at once", async () => {
+test("items: a limited item leaves the shop after its last day", () => {
+  const { ITEMS, onSale } = require("../server/items");
+  assert.equal(onSale(ITEMS["card-derby"], new Date("2027-01-15T23:00:00Z")), true);
+  assert.equal(onSale(ITEMS["card-derby"], new Date("2027-01-16T00:00:00Z")), false);
+  assert.equal(onSale(ITEMS["card-gold"], new Date("2099-01-01")), true);
+});
+
+test("player cards: a new player rates about 60; good, fast answers and wins raise it, to at most 99", async () => {
+  const pool = await freshPool(), coins = await createCoins(pool);
+  const { account } = await coins.register("pele", "password123", true);
+  const fresh = (await coins.account(account.id)).look;
+  assert.ok(fresh.rating >= 55 && fresh.rating <= 65, `new player ${fresh.rating}`);
+  await coins.recordMatch([{ account: account.id, asked: 3, correct: 0, correctMs: 0, won: false }]);
+  const poor = (await coins.account(account.id)).look;
+  assert.ok(poor.rating < fresh.rating);
+  for (let i = 0; i < 40; i++) await coins.recordMatch([{ account: account.id, asked: 3, correct: 3, correctMs: 3000, won: true }]);
+  const star = (await coins.account(account.id)).look;
+  assert.ok(star.rating >= 90 && star.rating <= 99, `star ${star.rating}`);
+  assert.deepEqual(star.stats, { acc: 98, spd: 89, win: 98, mp: 41 });
+});
+
+test("items: what a player wears and their rating show on everyone's room screen; a match updates the record", async () => {
   const { coins, port, stop } = await coinServer();
   try {
     const ana = await client(port, "look-ana"), ben = await client(port, "look-ben");
-    assert.equal(ana.inbox.find(m => m.type === "hello").coins.items["av-goat"].value, "🐐");
+    assert.equal(ana.inbox.find(m => m.type === "hello").coins.items["card-icon"].rarity, "legendary");
     ana.send({ type: "register", username: "anal", password: "password123", acceptTerms: true });
-    await ana.next("account", m => m.token);
-    ana.send({ type: "buyItem", item: "av-lion" }); await ana.next("itemBought");
-    ana.send({ type: "equip", kind: "avatar", item: "av-lion" }); await ana.next("equipped");
+    const { account } = await ana.next("account", m => m.token);
+    ana.send({ type: "buyItem", item: "card-gold" }); await ana.next("itemBought");
+    ana.send({ type: "equip", kind: "card", item: "card-gold" }); await ana.next("equipped");
     ben.send({ type: "register", username: "benl", password: "password123", acceptTerms: true });
     await ben.next("account", m => m.token);
     ana.send({ type: "create", name: "Ana", stake: 10, currency: "GC" });
     const { code } = await ana.next("room");
     ben.send({ type: "join", name: "Ben", code });
     const seen = await ben.next("room", m => m.players.length === 2);
-    assert.equal(seen.players.find(p => p.name === "Ana").look.avatar, "av-lion");
-    assert.equal(seen.players.find(p => p.name === "Ben").look.avatar, null);
-    ana.send({ type: "buyItem", item: "nc-purple" }); await ana.next("itemBought");
-    ana.send({ type: "equip", kind: "color", item: "nc-purple" }); await ana.next("equipped");
-    await ben.next("room", m => m.players.find(p => p.name === "Ana").look.color === "nc-purple");
-    ana.send({ type: "equip", kind: "frame", item: "fr-gold" });
+    const anaSeen = seen.players.find(p => p.name === "Ana").look;
+    assert.equal(anaSeen.card, "card-gold");
+    assert.equal(typeof anaSeen.rating, "number");
+    assert.equal(seen.players.find(p => p.name === "Ben").look.card, null);
+    ana.send({ type: "buyItem", item: "nc-sky" }); await ana.next("itemBought");
+    ana.send({ type: "equip", kind: "color", item: "nc-sky" }); await ana.next("equipped");
+    await ben.next("room", m => m.players.find(p => p.name === "Ana").look.color === "nc-sky");
+    ana.send({ type: "equip", kind: "card", item: "card-icon" });
     assert.match((await ana.next("error", m => m.about === "items")).message, /Buy it first/);
+
+    // Play the match through: it lands on both records
+    ana.send({ type: "start" });
+    for (let i = 0; i < 3; i++) {
+      await ana.next("question", m => m.index === i);
+      ana.send({ type: "answer", index: i, choice: 0 });
+      ben.send({ type: "answer", index: i, choice: 1 });
+      await ana.next("reveal", m => m.index === i);
+    }
+    const res = await ana.next("results", () => true, 8000);
+    assert.ok(res.standings.find(s => s.name === "Ana").look, "the results carry each player's look");
+    await new Promise(r => setTimeout(r, 200));
+    const mp = (await coins.account(account.id)).look.stats.mp;
+    assert.equal(mp, 1, "the match is on Ana's record");
     ana.close(); ben.close();
   } finally { await stop(); }
 });

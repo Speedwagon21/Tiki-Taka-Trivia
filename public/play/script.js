@@ -130,7 +130,26 @@ const sound = {
   wrong() { this.tone(160, 0.32, { type: "sawtooth", gain: 0.05 }); },
   join() { this.tone(784, 0.1, { type: "sine" }); this.tone(1046, 0.12, { at: 0.08 }); },
   win() { [523, 659, 784, 1046, 784, 1046].forEach((f, i) => this.tone(f, 0.22, { at: i * 0.11, type: "triangle", gain: 0.07 })); },
-  lose() { [392, 349, 294].forEach((f, i) => this.tone(f, 0.28, { at: i * 0.16, type: "sine", gain: 0.06 })); }
+  lose() { [392, 349, 294].forEach((f, i) => this.tone(f, 0.28, { at: i * 0.16, type: "sine", gain: 0.06 })); },
+  noise(dur, { freq = 800, q = 0.7, gain = 0.1, at = 0, attack = 0.3 } = {}) {
+    if (this.muted) return;
+    this.unlock();
+    if (!this.ctx) return;
+    if (this.ctx.state === "suspended") this.ctx.resume();
+    const c = this.ctx, t0 = c.currentTime + at;
+    const buf = c.createBuffer(1, Math.ceil(c.sampleRate * dur), c.sampleRate), d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    const src = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain();
+    src.buffer = buf; f.type = "bandpass"; f.frequency.value = freq; f.Q.value = q;
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(gain, t0 + attack);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    src.connect(f).connect(g).connect(c.destination);
+    src.start(t0);
+  },
+  crowd() { this.noise(3.2, { freq: 900, q: 0.5, gain: 0.12, attack: 0.5 }); this.noise(2.6, { freq: 2200, q: 1, gain: 0.04, at: 0.2, attack: 0.4 }); },
+  boom() { this.tone(70, 0.6, { type: "sine", gain: 0.25 }); this.noise(0.5, { freq: 300, gain: 0.15, attack: 0.01 }); },
+  pop() { this.noise(0.35, { freq: 1500, q: 2, gain: 0.05, attack: 0.01 }); }
 };
 function renderMute() {
   const b = $("muteBtn");
@@ -589,7 +608,7 @@ function renderRoom() {
   );
   $("playerCount").textContent = `${r.players.length}/${r.maxPlayers}`;
   const rows = r.players.map(p => el("li", { className: p.connected ? "" : "away" },
-    avatarFor(p),
+    miniCard(p),
     tint(el("span", { className: "pname" }, p.name, p.id === r.you ? el("em", {}, " (you)") : null), p),
     p.isHost && !h2h ? el("span", { className: "tag host" }, "Host") : null,
     !p.connected ? el("span", { className: "tag" }, "Reconnecting…") : null,
@@ -654,7 +673,7 @@ function renderChips() {
     return el("li", {
       className: ["chip", app.answered.has(p.id) ? "locked" : "", p.id === r.you ? "you" : "", p.connected ? "" : "away"].join(" ")
     },
-      tint(el("span", { className: "cname" }, badge(p), p.id === r.you ? "You" : p.name), p),
+      tint(el("span", { className: "cname" }, p.id === r.you ? "You" : p.name), p),
       el("span", { className: "cscore" }, String(p.score)),
       pts != null && app.room.phase === "reveal" ? el("span", { className: "delta" + (pts ? "" : " zero") }, pts ? `+${pts}` : "+0") : null,
       el("span", { className: "tick", ariaLabel: "locked in" }, "✓")
@@ -862,7 +881,7 @@ function onResults(m) {
 
   $("standings").replaceChildren(...m.standings.map(s => el("li", { className: s.id === youId ? "you" : "" },
     el("span", { className: "rank" }, String(s.rank)),
-    tint(el("span", { className: "sname" }, badge(s), s.id === youId ? "You" : s.name, s.left ? el("em", {}, " left") : null), s),
+    tint(el("span", { className: "sname" }, s.id === youId ? "You" : s.name, s.left ? el("em", {}, " left") : null), s),
     el("span", { className: "spts" }, `${s.score} pts`),
     el("span", { className: "net " + (s.net > 0 ? "up" : s.net < 0 ? "down" : "") },
       (s.net > 0 ? "+" : "") + fmt(s.net) + " " + cur)
@@ -871,7 +890,11 @@ function onResults(m) {
   renderLedger(m);
   renderResultActions();
   show("results");
-  if (won && m.outcome === "win") { sound.win(); confetti(); } else if (!won && m.outcome !== "refund") sound.lose();
+  const winners = m.outcome === "refund" ? [] : m.standings.filter(s => m.winnerIds.includes(s.id));
+  $("winnerCards").replaceChildren(...winners.slice(0, 2).map(s => cardFor(s, "big")));
+  const showOff = winners.find(s => itemOf(s.look && s.look.celebration));
+  if (showOff) celebrate(itemOf(showOff.look.celebration).value, showOff.name);
+  if (won && m.outcome === "win") { if (!showOff) sound.win(); confetti(); } else if (!won && m.outcome !== "refund" && !showOff) sound.lose();
   else sound.right();
 }
 
@@ -1237,6 +1260,8 @@ function renderAccount() {
     el("button", { className: "btn solid wide", type: "button", onclick: () => send({ type: "acceptTerms" }) }, "I accept")));
   if (a.pausedUntil) body.append(el("div", { className: "draft" },
     `${a.pauseKind === "exclusion" ? "You've excluded yourself" : "You're taking a break"} until ${longDate(a.pausedUntil)}. You can't play, claim free coins or buy coins until then.`));
+  body.append(el("div", { className: "my-card" }, cardFor({ name: a.username, look: a.look }),
+    el("p", { className: "hint" }, "Your player card. Play matches to raise your rating, and change its design in the store.")));
   const balance = (code, name, note) => el("div", {}, el("small", {}, name), el("strong", {}, coinText(code, a[code])), el("span", { className: "t-note" }, note));
   body.append(
     el("div", { className: "stake-strip" },
@@ -1380,43 +1405,142 @@ function renderStore() {
 
 /* ----- what players wear: Gold Coin items, looked up by id in the server's catalogue ----- */
 const itemOf = id => (id && app.coins && app.coins.items && Object.hasOwn(app.coins.items, id) && app.coins.items[id]) || null;
-function avatarFor(p, letter = (p.name[0] || "?").toUpperCase()) {
-  const look = p.look || {}, av = itemOf(look.avatar), fr = itemOf(look.frame);
-  return el("span", { className: "avatar" + (av ? " emoji" : "") + (fr ? " fr-" + fr.value : ""), ariaHidden: "true" }, av ? av.value : letter);
-}
-const badge = p => { const av = itemOf(p.look && p.look.avatar); return av ? av.value + " " : null; };
+const RARITY = { common: "Common", rare: "Rare", epic: "Epic", legendary: "Legendary" };
+
+/* A name in the player's colour, or animated style */
 function tint(node, p) {
   const c = itemOf(p.look && p.look.color);
-  if (c) node.style.color = c.value;
+  if (c && c.value.startsWith("anim-")) node.classList.add("name-" + c.value);
+  else if (c) node.style.color = c.value;
   return node;
 }
 
-const KIND_TITLES = { avatar: "Avatars", frame: "Frames", color: "Name colours" };
+/* The player card: design from their card item, rating and stats from their record (Bronze until they buy one) */
+const designOf = p => { const c = itemOf(p.look && p.look.card); return c ? c.value : "bronze"; };
+function miniCard(p) {
+  const r = p.look && p.look.rating;
+  return el("span", { className: "pmini d-" + designOf(p), title: r ? `Rating ${r}` : "" }, r ? String(r) : (p.name[0] || "?").toUpperCase());
+}
+function cardFor(p, extra = "") {
+  const look = p.look || {}, st = look.stats || {};
+  const stat = (label, v) => el("span", {}, el("b", {}, v == null ? "–" : String(v)), label);
+  return el("div", { className: `pcard d-${designOf(p)} ${extra}` },
+    el("span", { className: "pc-top" }, el("strong", { className: "pc-rating" }, look.rating ? String(look.rating) : "–"), el("small", {}, "TTT")),
+    el("span", { className: "pc-face", ariaHidden: "true" }, (p.name[0] || "?").toUpperCase()),
+    el("span", { className: "pc-name" }, p.name),
+    el("span", { className: "pc-stats" }, stat("ACC", st.acc), stat("SPD", st.spd), stat("WIN", st.win), stat("MP", st.mp)));
+}
+
+/* ----- celebrations: take over the screen when someone wins (everyone in the room sees the winner's) ----- */
+const CELEBRATION_ICONS = { confetti: "🎉", fireworks: "🎆", trophy: "🏆", net: "⚽", goldrain: "🪙" };
+function celebrate(kind, name) {
+  document.querySelector(".celebration")?.remove();
+  const box = el("div", { className: `celebration is-${kind}`, ariaHidden: "true" }, el("div", { className: "cel-dim" }));
+  const head = el("div", { className: "cel-head" },
+    el("strong", {}, kind === "net" ? "GOOOAL!" : kind === "trophy" ? "CHAMPION" : kind === "goldrain" ? "LEGENDARY" : "WINNER"),
+    el("span", {}, name));
+  document.body.append(box);
+  setTimeout(() => box.remove(), 4200);
+  sound.crowd();
+  if (prefersReducedMotion) { box.append(head); return; }
+
+  const canvas = el("canvas"), ctx = canvas.getContext("2d");
+  const W = canvas.width = innerWidth, H = canvas.height = innerHeight;
+  box.append(canvas);
+  const parts = [], rnd = (a, b) => a + Math.random() * (b - a);
+  const COLORS = ["#e8c26a", "#5fd38d", "#6cc4ff", "#ff6b6b", "#b48cff", "#fff"];
+  const confettiBurst = (x, dir, n, colors = COLORS) => { for (let i = 0; i < n; i++) parts.push({
+    x, y: H + 10, vx: dir * rnd(3, 11), vy: -rnd(13, 22), g: 0.38, w: rnd(6, 11), h: rnd(10, 16), r: rnd(0, 6), vr: rnd(-0.3, 0.3),
+    c: colors[i % colors.length], life: 1, fade: 0.004, shape: "rect" }); };
+  const firework = () => {
+    const x = rnd(W * 0.15, W * 0.85), y = rnd(H * 0.12, H * 0.45), c = COLORS[Math.floor(rnd(0, 5))];
+    for (let i = 0; i < 70; i++) { const a = (i / 70) * Math.PI * 2, v = rnd(2, 6.5);
+      parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, g: 0.06, w: 3, h: 3, r: 0, vr: 0, c, life: 1, fade: 0.014, shape: "dot" }); }
+    sound.pop();
+  };
+  const timers = [];
+  const at = (ms, fn) => timers.push(setTimeout(fn, ms));
+
+  if (kind === "confetti") { confettiBurst(0, 1, 90); confettiBurst(W, -1, 90); at(700, () => { confettiBurst(0, 1, 60); confettiBurst(W, -1, 60); }); }
+  if (kind === "fireworks") for (let i = 0; i < 9; i++) at(i * 380, firework);
+  if (kind === "trophy") {
+    box.append(el("div", { className: "cel-trophy" }, "🏆"));
+    at(900, () => { confettiBurst(0, 1, 70, ["#e8c26a", "#fff", "#f3d27a"]); confettiBurst(W, -1, 70, ["#e8c26a", "#fff", "#f3d27a"]); sound.win(); });
+  }
+  if (kind === "net") {
+    box.append(el("div", { className: "cel-net" }), el("div", { className: "cel-ball" }, "⚽"), el("div", { className: "cel-flash" }));
+    at(650, () => {
+      box.classList.add("shake"); sound.boom();
+      for (let i = 0; i < 60; i++) { const a = rnd(0, Math.PI * 2), v = rnd(3, 10);
+        parts.push({ x: W / 2, y: H * 0.42, vx: Math.cos(a) * v, vy: Math.sin(a) * v, g: 0.2, w: 4, h: 4, r: 0, vr: 0, c: "#fff", life: 1, fade: 0.018, shape: "dot" }); }
+    });
+  }
+  if (kind === "goldrain") {
+    box.append(el("div", { className: "cel-glow" }));
+    for (let i = 0; i < 140; i++) parts.push({ x: rnd(0, W), y: rnd(-H, -10), vx: rnd(-0.6, 0.6), vy: rnd(3, 7), g: 0.03, w: rnd(9, 15), h: 0,
+      r: rnd(0, 6), vr: rnd(0.05, 0.15), c: "#e8c26a", life: 1, fade: 0.002, shape: "coin" });
+    at(300, () => sound.win());
+  }
+  at(kind === "net" ? 650 : kind === "trophy" ? 500 : 250, () => box.append(head));
+
+  const t0 = performance.now();
+  (function frame(now) {
+    if (!box.isConnected) { timers.forEach(clearTimeout); return; }
+    ctx.clearRect(0, 0, W, H);
+    for (const p of parts) {
+      p.vy += p.g; p.x += p.vx; p.y += p.vy; p.r += p.vr; p.life -= p.fade;
+      if (p.shape === "rect") p.vx *= 0.99;
+      if (p.life <= 0) continue;
+      ctx.globalAlpha = Math.min(1, p.life * 1.5);
+      ctx.fillStyle = p.c;
+      if (p.shape === "rect") { ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.r); ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h); ctx.restore(); }
+      else if (p.shape === "coin") { ctx.beginPath(); ctx.ellipse(p.x, p.y, p.w * Math.abs(Math.cos(p.r)) + 1, p.w, 0, 0, Math.PI * 2); ctx.fill(); }
+      else { ctx.beginPath(); ctx.arc(p.x, p.y, p.w, 0, Math.PI * 2); ctx.fill(); }
+    }
+    if (now - t0 < 4000) requestAnimationFrame(frame);
+  })(t0);
+}
+
+/* ----- the item shop ----- */
+const KIND_TITLES = { card: "Player cards", celebration: "Celebrations", color: "Name styles" };
+const KIND_NOTES = {
+  card: "Your card shows in every room and on the results screen. Its rating comes from your real record.",
+  celebration: "Win a match and it takes over everyone's screen.",
+  color: "How your name looks to everyone."
+};
 function renderShop() {
   const items = (app.coins && app.coins.items) || {}, a = app.account;
   const owned = new Set((a && a.owned) || []), look = (a && a.look) || {};
-  const me = { name: a ? a.username : "You", look: {} };
+  const me = { name: a ? a.username : "You", look };
+  const today = new Date().toISOString().slice(0, 10);
   $("shop").replaceChildren(...Object.entries(KIND_TITLES).map(([kind, title]) => el("div", {},
     el("h4", { className: "shop-kind" }, title),
-    el("ul", { className: "item-grid" }, ...Object.entries(items).filter(([, it]) => it.kind === kind).map(([id, it]) => {
-      const has = owned.has(id), worn = look[kind] === id;
-      const preview = kind === "color"
-        ? tint(el("span", { className: "item-swatch" }, me.name), { look: { color: id } })
-        : avatarFor({ ...me, look: { [kind]: id } }, kind === "frame" ? me.name[0].toUpperCase() : "");
-      const label = !a ? `${fmt(it.price)} GC` : worn ? "Take off" : has ? "Wear" : `Buy · ${fmt(it.price)} GC`;
-      return el("li", { className: "item" + (worn ? " worn" : "") },
-        preview,
-        el("span", { className: "item-name" }, it.name),
-        el("button", {
-          className: "btn small" + (has ? "" : " solid"), type: "button",
-          disabled: Boolean(a) && !has && a.GC < it.price,
-          onclick: () => {
-            setMsg("shopMsg", "");
-            if (!a) { openAccount(); return setMsg("accountMsg", "Sign in to spend Gold Coins."); }
-            send(has ? { type: "equip", kind, item: worn ? null : id } : { type: "buyItem", item: id });
-          }
-        }, label));
-    })))));
+    el("p", { className: "hint" }, KIND_NOTES[kind]),
+    el("ul", { className: "item-grid" + (kind === "card" ? " cards" : "") }, ...Object.entries(items)
+      .filter(([id, it]) => it.kind === kind && (!it.until || it.until >= today || owned.has(id)))
+      .map(([id, it]) => {
+        const has = owned.has(id), worn = look[kind] === id;
+        const preview = kind === "card" ? cardFor({ ...me, look: { ...look, card: id } }, "small")
+          : kind === "celebration" ? el("button", { className: "cel-preview", type: "button", title: "Preview", onclick: () => celebrate(it.value, me.name) },
+            el("span", {}, CELEBRATION_ICONS[it.value] || "🎉"), el("small", {}, "Preview"))
+          : tint(el("span", { className: "item-swatch" }, me.name), { look: { color: id } });
+        const label = !a ? `${fmt(it.price)} GC` : worn ? "Take off" : has ? "Use" : `Buy · ${fmt(it.price)} GC`;
+        const days = it.until && Math.ceil((new Date(it.until + "T23:59:59Z") - Date.now()) / 864e5);
+        return el("li", { className: `item r-${it.rarity}` + (worn ? " worn" : "") },
+          el("span", { className: "rarity" }, RARITY[it.rarity] || ""),
+          it.until && !has ? el("span", { className: "limited" }, days <= 1 ? "Last day" : `Leaves in ${days} days`) : null,
+          preview,
+          el("span", { className: "item-name" }, it.name),
+          el("button", {
+            className: "btn small" + (has ? "" : " solid"), type: "button",
+            disabled: Boolean(a) && !has && a.GC < it.price,
+            onclick: () => {
+              setMsg("shopMsg", "");
+              if (!a) { openAccount(); return setMsg("accountMsg", "Sign in to spend Gold Coins."); }
+              send(has ? { type: "equip", kind, item: worn ? null : id } : { type: "buyItem", item: id });
+            }
+          }, label));
+      })))));
 }
 
 async function buyPack(id) {

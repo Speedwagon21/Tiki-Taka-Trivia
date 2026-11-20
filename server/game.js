@@ -259,7 +259,7 @@ class Room {
   begin() {
     this.lastActive = Date.now();
     this.players = this.active;                     // drop anyone who left the last match
-    this.players.forEach(p => { p.score = 0; p.answer = null; });
+    this.players.forEach(p => { p.score = 0; p.answer = null; p.correct = 0; p.correctMs = 0; });
     const avoid = new Set(this.seen);
     this.players.forEach(p => p.recent.forEach(id => avoid.add(id)));
     this.round = buildRound(avoid);
@@ -330,6 +330,7 @@ class Room {
     this.active.forEach(p => {
       const choice = p.answer ? p.answer.choice : null;
       const points = p.answer ? scoreAnswer(choice === item.correct, p.answer.ms, this.opts.questionMs) : 0;
+      if (p.answer && choice === item.correct) { p.correct++; p.correctMs += p.answer.ms; }
       p.score += points;
       picks[p.id] = { choice, points };
     });
@@ -366,6 +367,12 @@ class Room {
         .catch(err => console.error("PLAY-THROUGH FAILED", err));
     }
     if (this.escrowed) this.payOut(result);
+    // Player card ratings come from this record
+    const record = this.players.filter(p => p.account).map(p => ({
+      account: p.account, asked: this.round.length, correct: p.correct || 0, correctMs: p.correctMs || 0,
+      won: result.outcome !== "refund" && result.winnerIds.includes(p.id)
+    }));
+    if (record.length && this.manager.onMatch) this.manager.onMatch(record).catch(err => console.error("match record failed:", err));
     this.players = this.active;
     this.syncState();
     this.broadcast(this.lastResults);

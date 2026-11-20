@@ -7,7 +7,7 @@
 const crypto = require("crypto");
 const { promisify } = require("util");
 const scrypt = promisify(crypto.scrypt);
-const { ITEMS, KINDS } = require("./items");
+const { ITEMS, KINDS, onSale } = require("./items");
 
 const CURRENCIES = ["GC", "SC"];
 const UNIT = { GC: 1, SC: 100 };                // stored units per coin
@@ -107,7 +107,32 @@ CREATE TABLE IF NOT EXISTS owned_items (
 );
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS look_avatar TEXT;
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS look_frame TEXT;
-ALTER TABLE accounts ADD COLUMN IF NOT EXISTS look_color TEXT;`;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS look_color TEXT;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS look_card TEXT;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS look_celebration TEXT;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS st_matches INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS st_wins INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS st_asked INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS st_correct INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS st_correct_ms BIGINT NOT NULL DEFAULT 0;`;
+
+/* A player card's rating (45-99) and stats from their record. Accuracy is pulled toward 50% until there
+   are enough answers to trust it (speed and wins too), so one lucky match doesn't make a 99. */
+const QUESTION_MS = 10000;
+function rating(a) {
+  const matches = Number(a.st_matches), asked = Number(a.st_asked), correct = Number(a.st_correct);
+  const acc = (correct + 3) / (asked + 6);
+  const speedSum = Math.max(0, correct - Number(a.st_correct_ms) / QUESTION_MS);     // each right answer scores 0-1 for speed
+  const spd = (speedSum + 0.3 * 6) / (correct + 6);
+  const win = (Number(a.st_wins) + 1.5) / (matches + 5);
+  const exp = Math.min(1, Math.log10(matches + 1) / 2);
+  const r = Math.round(36 + 40 * acc + 14 * spd + 8 * exp + 7 * win);
+  return {
+    rating: Math.max(45, Math.min(99, r)),
+    stats: { acc: Math.round(100 * correct / Math.max(1, asked)), spd: correct ? Math.round(99 * speedSum / correct) : 0,
+      win: Math.round(100 * Number(a.st_wins) / Math.max(1, matches)), mp: matches }
+  };
+}
 
 const playerError = message => Object.assign(new Error(message), { userMessage: message });
 /* Turns Postgres's duplicate-key error into a message for the player */
@@ -251,7 +276,8 @@ async function createCoins(pool) {
 
     async account(id) {
       const r = await pool.query(`SELECT id, username, gc, sc, sc_locked, verified, last_daily, paused_until, pause_kind,
-        spend_limit, spend_limit_next, spend_limit_next_at, look_avatar, look_frame, look_color FROM accounts WHERE id = $1 AND deleted_at IS NULL`, [id]);
+        spend_limit, spend_limit_next, spend_limit_next_at, look_color, look_card, look_celebration,
+        st_matches, st_wins, st_asked, st_correct, st_correct_ms FROM accounts WHERE id = $1 AND deleted_at IS NULL`, [id]);
       if (!r.rows.length) return null;
       const a = r.rows[0];
       const bought = (await pool.query("SELECT COUNT(*) AS n FROM purchases WHERE account_id = $1", [id])).rows[0];
@@ -265,7 +291,7 @@ async function createCoins(pool) {
         pendingLimit: a.spend_limit_next_at && ms(a.spend_limit_next_at) > Date.now()
           ? { cents: a.spend_limit_next == null ? null : Number(a.spend_limit_next), at: new Date(a.spend_limit_next_at).toISOString() } : null,
         owned: (await pool.query("SELECT item FROM owned_items WHERE account_id = $1 ORDER BY created_at", [id])).rows.map(o => o.item),
-        look: { avatar: a.look_avatar, frame: a.look_frame, color: a.look_color },
+        look: { card: a.look_card, celebration: a.look_celebration, color: a.look_color, ...rating(a) },
         spentThisMonth: Number((await pool.query("SELECT COALESCE(SUM(usd_cents), 0) AS s FROM purchases WHERE account_id = $1 AND created_at >= $2", [id, monthStart()])).rows[0].s)
       };
     },
@@ -274,6 +300,7 @@ async function createCoins(pool) {
     async buyItem(id, itemId) {
       const item = Object.hasOwn(ITEMS, itemId) && ITEMS[itemId];
       if (!item) throw playerError("There is no such item.");
+      if (!onSale(item)) throw playerError("That was a limited item and it has left the shop.");
       const block = await blockReason(id);
       if (block) throw playerError(block);
       await tx(async client => {
@@ -295,6 +322,16 @@ async function createCoins(pool) {
       }
       await pool.query(`UPDATE accounts SET ${KINDS[kind]} = $1 WHERE id = $2`, [itemId, id]);
       onChange(id);
+    },
+
+    /* Adds a finished match to each signed-in player's record: [{ account, asked, correct, correctMs, won }] */
+    async recordMatch(list) {
+      for (const p of list) {
+        await pool.query(`UPDATE accounts SET st_matches = st_matches + 1, st_wins = st_wins + $1, st_asked = st_asked + $2,
+          st_correct = st_correct + $3, st_correct_ms = st_correct_ms + $4 WHERE id = $5`,
+          [p.won ? 1 : 0, p.asked, p.correct, p.correctMs, p.account]);
+        onChange(p.account);
+      }
     },
 
     async acceptTerms(id) {

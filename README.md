@@ -35,7 +35,16 @@ Tests run on an in-memory Postgres. To run the coin tests on a real one: `TEST_D
 
 ## Gold Coin items
 
-Gold Coins buy looks that everyone in a room sees: avatars, frames and name colours. They show in the room list, on the live scoreboard and in the results. They're for show and never help a player win. The catalogue (names, prices, emoji and colours) is in `server/items.js`. To add an item, add a line there; a new frame style also needs a `.fr-<value>` rule in `public/play/style.css`. Each purchase is a ledger row (reason `item`), and owned items are in `owned_items`.
+Gold Coins buy things everyone in a room sees. None of them help anyone win.
+
+- **Player cards.** Everyone has a card (Bronze until they buy a design) showing a 45-99 rating and their accuracy, speed, win rate and matches played.
+  - The rating comes from the player's real record. Every finished match adds to it, and it is smoothed so one lucky match doesn't make a 99.
+  - Cards show in the room list (mini), in the account panel, and big for the winner on the results screen.
+- **Celebrations.** When someone wins, their celebration takes over everyone's screen, with crowd noise. There are five: Confetti cannon, Fireworks, Trophy lift, Net buster and Golden rain.
+- **Name styles.** Colours, plus animated On fire and Gold shimmer.
+- **Rarity and limited items.** Each item is Common, Rare, Epic or Legendary. An item with `until` leaves the shop after that date; whoever bought it keeps it.
+
+The catalogue is in `server/items.js`. A new card design also needs a `.d-<value>` style in `public/play/style.css`, and a new celebration needs a case in `celebrate()` in `public/play/script.js`. Each purchase is a ledger row (reason `item`), and owned items are in `owned_items`.
 
 ## Cashing out Sweeps Coins (off until legally cleared)
 
