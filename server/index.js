@@ -141,6 +141,7 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
       if (ip) perIp.get(ip) > 1 ? perIp.set(ip, perIp.get(ip) - 1) : (perIp.delete(ip), lookups.delete(ip));
     });
     let key = null, account = null;     // account: the signed-in account's id
+    let look = null;                     // what the signed-in player wears in rooms (item ids)
     ws.isAlive = true;
     ws.on("pong", () => { ws.isAlive = true; });
     const send = msg => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); };
@@ -199,7 +200,9 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
       account = id;
       if (!accountSockets.has(id)) accountSockets.set(id, new Set());
       accountSockets.get(id).add(send);
-      send({ type: "account", account: await coins.account(id), ...(token ? { token } : {}) });
+      const a = await coins.account(id);
+      look = a.look;
+      send({ type: "account", account: a, ...(token ? { token } : {}) });
     };
 
     ws.on("message", async raw => { try {
@@ -225,6 +228,7 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
           type: "hello", resumed: Boolean(entry), escrow: escrow ? { address: escrow.address } : null, cryptoStakes,
           coins: coins ? {
             packs: escrow ? Object.fromEntries(Object.entries(coins.packs).map(([id, p]) => [id, { ...p, lamports: packLamports(p) }])) : null,
+            items: coins.items,
             redemption, redeemMin: REDEEM_MIN, termsVersion: coins.termsVersion, pauses: Object.keys(coins.pauses),
             regionAllowed: regionAllowed(country)
           } : null
@@ -236,7 +240,7 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
       if (!key) return fail("Say hello first.");
 
       const who = () => ({
-        key, send, msg, name: cleanName(msg.name), wallet: cleanWallet(msg.wallet), recent: cleanRecent(msg.recent)
+        key, send, msg, name: cleanName(msg.name), wallet: cleanWallet(msg.wallet), recent: cleanRecent(msg.recent), look: account ? look : null
       });
       const entry = manager.find(key);
 
@@ -282,6 +286,17 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
         case "redemptions":
           if (!coins || !account) return;
           return send({ type: "redemptions", list: await coins.redemptions(account) });
+        case "buyItem":
+        case "equip": {
+          if (!coins || !account) return;
+          try {
+            if (msg.type === "buyItem") await coins.buyItem(account, String(msg.item));
+            else await coins.equip(account, String(msg.kind), msg.item == null ? null : String(msg.item));
+          } catch (err) { if (!err.userMessage) throw err; return send({ type: "error", message: err.userMessage, about: "items" }); }
+          look = (await coins.account(account)).look;
+          if (entry) { entry.player.look = look; entry.room.syncState(); }     // the room sees the change at once
+          return send({ type: msg.type === "buyItem" ? "itemBought" : "equipped", item: msg.item ?? null });
+        }
         case "acceptTerms":
           if (!coins || !account) return;
           await coins.acceptTerms(account);
@@ -364,7 +379,7 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
           if (!(await takeStake(w, currency, entry.room.units, "deposit"))) return;
           const seat = manager.find(key);
           if (!seat || seat.room !== entry.room || seat.room.inMatch() || seat.player.paid) return manager.refund(w, currency);
-          Object.assign(seat.player, { wallet: w.wallet || seat.player.wallet, account: w.account || seat.player.account, paid: w.paid });
+          Object.assign(seat.player, { wallet: w.wallet || seat.player.wallet, account: w.account || seat.player.account, paid: w.paid, look: w.look || seat.player.look });
           const err = msg.rematch === true && seat.room.mode === "h2h" ? seat.room.requestRematch(seat.player) : null;
           if (err) fail(err);
           return seat.room.syncState();

@@ -232,6 +232,12 @@ function handle(m) {
       if (m.token) { $("accountDialog").close(); setMsg("storeMsg", ""); toast(`Signed in as ${m.account.username}`); }
       return;
     case "claimed": setMsg("accountMsg", "Today's free coins are in your balance.", true); return;
+    case "itemBought": {
+      const item = itemOf(m.item);
+      if (item) { send({ type: "equip", kind: item.kind, item: m.item }); toast(`${item.name} is yours`); sound.win(); }
+      return;
+    }
+    case "equipped": return;
     case "accepted": setMsg("accountMsg", "Thanks. You're all set to play.", true); return;
     case "limitSet": setMsg("accountMsg", "Spending limit saved.", true); return;
     case "paused":
@@ -285,6 +291,7 @@ function handle(m) {
       if (m.about === "intent") { if (intentWaiter) intentWaiter.reject(new Error(m.message)); return; }
       if (m.about === "deposit") return setMsg(app.payMsg, m.message);
       if (m.about === "auth" || m.about === "redeem" || m.about === "rg") return setMsg("accountMsg", m.message);
+      if (m.about === "items") return setMsg("shopMsg", m.message);
       if (m.about === "store") { busy(false); return setMsg(app.screen === "store" ? "storeMsg" : "accountMsg", m.message); }
       if (m.about === "lookup" || m.about === "join") {
         if (m.about === "lookup") app.lookup = null;
@@ -582,8 +589,8 @@ function renderRoom() {
   );
   $("playerCount").textContent = `${r.players.length}/${r.maxPlayers}`;
   const rows = r.players.map(p => el("li", { className: p.connected ? "" : "away" },
-    el("span", { className: "avatar", ariaHidden: "true" }, (p.name[0] || "?").toUpperCase()),
-    el("span", { className: "pname" }, p.name, p.id === r.you ? el("em", {}, " (you)") : null),
+    avatarFor(p),
+    tint(el("span", { className: "pname" }, p.name, p.id === r.you ? el("em", {}, " (you)") : null), p),
     p.isHost && !h2h ? el("span", { className: "tag host" }, "Host") : null,
     !p.connected ? el("span", { className: "tag" }, "Reconnecting…") : null,
     el("span", { className: "addr" }, short(p.wallet))
@@ -647,7 +654,7 @@ function renderChips() {
     return el("li", {
       className: ["chip", app.answered.has(p.id) ? "locked" : "", p.id === r.you ? "you" : "", p.connected ? "" : "away"].join(" ")
     },
-      el("span", { className: "cname" }, p.id === r.you ? "You" : p.name),
+      tint(el("span", { className: "cname" }, badge(p), p.id === r.you ? "You" : p.name), p),
       el("span", { className: "cscore" }, String(p.score)),
       pts != null && app.room.phase === "reveal" ? el("span", { className: "delta" + (pts ? "" : " zero") }, pts ? `+${pts}` : "+0") : null,
       el("span", { className: "tick", ariaLabel: "locked in" }, "✓")
@@ -855,7 +862,7 @@ function onResults(m) {
 
   $("standings").replaceChildren(...m.standings.map(s => el("li", { className: s.id === youId ? "you" : "" },
     el("span", { className: "rank" }, String(s.rank)),
-    el("span", { className: "sname" }, s.id === youId ? "You" : s.name, s.left ? el("em", {}, " left") : null),
+    tint(el("span", { className: "sname" }, badge(s), s.id === youId ? "You" : s.name, s.left ? el("em", {}, " left") : null), s),
     el("span", { className: "spts" }, `${s.score} pts`),
     el("span", { className: "net " + (s.net > 0 ? "up" : s.net < 0 ? "down" : "") },
       (s.net > 0 ? "+" : "") + fmt(s.net) + " " + cur)
@@ -1233,7 +1240,7 @@ function renderAccount() {
   const balance = (code, name, note) => el("div", {}, el("small", {}, name), el("strong", {}, coinText(code, a[code])), el("span", { className: "t-note" }, note));
   body.append(
     el("div", { className: "stake-strip" },
-      balance("GC", "Gold Coins", "For fun. Never cashed out."),
+      balance("GC", "Gold Coins", "Buy items or play for fun. Never cashed out."),
       balance("SC", "Sweeps Coins", "Free. Played for prizes.")),
     el("button", {
       className: "btn solid wide", type: "button", disabled: !a.dailyReady || Boolean(a.pausedUntil),
@@ -1241,7 +1248,7 @@ function renderAccount() {
     }, a.pausedUntil ? "Free coins are paused" : a.dailyReady ? "Claim today's free coins" : "Free coins claimed today. Back tomorrow."));
   body.append(el("button", {
     className: "btn wide", type: "button", onclick: () => { $("accountDialog").close(); openStore(); }
-  }, "Open the coin store"));
+  }, "Open the store"));
   body.append(...cashOutSection(a), safetySection(a), dataSection());
   body.append(el("button", {
     className: "btn ghost wide", type: "button",
@@ -1362,12 +1369,54 @@ function renderStore() {
       el("span", { className: "pack-sc" }, `+ ${p.sc} Sweeps Coin${p.sc === 1 ? "" : "s"} free`),
       el("button", { className: "btn solid wide", type: "button", onclick: () => buyPack(id) }, `Buy for $${p.usd.toFixed(2)}`),
       el("span", { className: "pack-extra" }, `Paid as ${fmt4(p.lamports / 1e9)} SOL`))));
-  if (!open) $("packGrid").replaceChildren(el("li", { className: "pack-closed" }, "The coin store opens once payments are switched on. Until then, claim your free daily coins from your account."));
+  if (!open) $("packGrid").replaceChildren(el("li", { className: "pack-closed" }, "Coin packs go on sale once payments are switched on. Until then, claim free daily coins from your account."));
+  renderShop();
   const list = (a && app.purchases) || [];
   $("historyBox").hidden = !list.length;
   $("purchaseList").replaceChildren(...list.map(p => el("li", {},
     el("span", { className: "pname" }, p.name, el("em", {}, ` · ${new Date(p.at).toLocaleDateString()}`)),
     el("a", { className: "addr", href: `https://explorer.solana.com/tx/${p.signature}?cluster=devnet`, target: "_blank", rel: "noopener" }, "Receipt"))));
+}
+
+/* ----- what players wear: Gold Coin items, looked up by id in the server's catalogue ----- */
+const itemOf = id => (id && app.coins && app.coins.items && Object.hasOwn(app.coins.items, id) && app.coins.items[id]) || null;
+function avatarFor(p, letter = (p.name[0] || "?").toUpperCase()) {
+  const look = p.look || {}, av = itemOf(look.avatar), fr = itemOf(look.frame);
+  return el("span", { className: "avatar" + (av ? " emoji" : "") + (fr ? " fr-" + fr.value : ""), ariaHidden: "true" }, av ? av.value : letter);
+}
+const badge = p => { const av = itemOf(p.look && p.look.avatar); return av ? av.value + " " : null; };
+function tint(node, p) {
+  const c = itemOf(p.look && p.look.color);
+  if (c) node.style.color = c.value;
+  return node;
+}
+
+const KIND_TITLES = { avatar: "Avatars", frame: "Frames", color: "Name colours" };
+function renderShop() {
+  const items = (app.coins && app.coins.items) || {}, a = app.account;
+  const owned = new Set((a && a.owned) || []), look = (a && a.look) || {};
+  const me = { name: a ? a.username : "You", look: {} };
+  $("shop").replaceChildren(...Object.entries(KIND_TITLES).map(([kind, title]) => el("div", {},
+    el("h4", { className: "shop-kind" }, title),
+    el("ul", { className: "item-grid" }, ...Object.entries(items).filter(([, it]) => it.kind === kind).map(([id, it]) => {
+      const has = owned.has(id), worn = look[kind] === id;
+      const preview = kind === "color"
+        ? tint(el("span", { className: "item-swatch" }, me.name), { look: { color: id } })
+        : avatarFor({ ...me, look: { [kind]: id } }, kind === "frame" ? me.name[0].toUpperCase() : "");
+      const label = !a ? `${fmt(it.price)} GC` : worn ? "Take off" : has ? "Wear" : `Buy · ${fmt(it.price)} GC`;
+      return el("li", { className: "item" + (worn ? " worn" : "") },
+        preview,
+        el("span", { className: "item-name" }, it.name),
+        el("button", {
+          className: "btn small" + (has ? "" : " solid"), type: "button",
+          disabled: Boolean(a) && !has && a.GC < it.price,
+          onclick: () => {
+            setMsg("shopMsg", "");
+            if (!a) { openAccount(); return setMsg("accountMsg", "Sign in to spend Gold Coins."); }
+            send(has ? { type: "equip", kind, item: worn ? null : id } : { type: "buyItem", item: id });
+          }
+        }, label));
+    })))));
 }
 
 async function buyPack(id) {

@@ -444,3 +444,20 @@ dialog[open] { animation: zoom .2s ease-out; }
 .acct-more summary { cursor: pointer; font-weight: 600; margin-bottom: 10px; }
 .acct-more .wallet-options { margin-bottom: 14px; }
 
+
+/* Gold Coin items: avatars, frames, name colours */
+.avatar.emoji { background: var(--night); font-size: 1.15rem; }
+.avatar.fr-silver { box-shadow: 0 0 0 2px #c9ced6; }
+.avatar.fr-neon { box-shadow: 0 0 0 2px #5fd38d, 0 0 10px #5fd38d; }
+.avatar.fr-gold { box-shadow: 0 0 0 2px #e8c26a, 0 0 10px rgba(232, 194, 106, .55); }
+.avatar.fr-flame { box-shadow: 0 0 0 2px #ff7a3d, 0 0 12px #ff3d00; }
+.avatar.fr-rainbow { border: 2px solid transparent; background: linear-gradient(var(--night), var(--night)) padding-box, conic-gradient(#ff5f5f, #ffb347, #ffe66d, #5fd38d, #6cc4ff, #b48cff, #ff5f5f) border-box; }
+.shop-kind { font-size: .82rem; font-weight: 600; color: var(--muted); letter-spacing: .04em; text-transform: uppercase; margin: 14px 0 8px; }
+.item-grid { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
+.item { display: grid; justify-items: center; gap: 8px; padding: 14px 10px 12px; border: 1px solid var(--line); border-radius: 14px; background: var(--night); text-align: center; }
+.item.worn { border-color: var(--green); }
+.item .avatar { width: 44px; height: 44px; font-size: 1.5rem; }
+.item-swatch { height: 44px; display: grid; place-items: center; font-weight: 700; font-size: 1.05rem; }
+.item-name { font-size: .88rem; }
+.item .btn { width: 100%; }
+@media (max-width: 520px) { .item-grid { grid-template-columns: repeat(2, 1fr); } }

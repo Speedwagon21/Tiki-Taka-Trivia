@@ -33,6 +33,10 @@ Set `DATABASE_URL` to a Postgres database to switch on accounts and coin games. 
 
 Tests run on an in-memory Postgres. To run the coin tests on a real one: `TEST_DATABASE_URL=postgres://... node --test --test-concurrency=1 test/coins.test.js` (it drops the coin tables first).
 
+## Gold Coin items
+
+Gold Coins buy looks that everyone in a room sees: avatars, frames and name colours. They show in the room list, on the live scoreboard and in the results. They're for show and never help a player win. The catalogue (names, prices, emoji and colours) is in `server/items.js`. To add an item, add a line there; a new frame style also needs a `.fr-<value>` rule in `public/play/style.css`. Each purchase is a ledger row (reason `item`), and owned items are in `owned_items`.
+
 ## Cashing out Sweeps Coins (off until legally cleared)
 
 Built but switched off. Set `REDEMPTION=1` only once a lawyer has cleared cash-outs for the places you serve.

@@ -79,7 +79,7 @@ function settle(players, stake, rake = 0) {
   const standings = sorted.map(p => {
     const rank = 1 + sorted.filter(o => o.score > p.score).length;
     const payout = everyoneLevel || p.score === best ? share : 0;
-    return { id: p.id, name: p.name, wallet: short(p.wallet), left: p.left,
+    return { id: p.id, name: p.name, wallet: short(p.wallet), left: p.left, look: p.look || null,
              score: p.score, rank, payout, net: round2(payout - stake) };
   });
   return { pot, outcome, rake: everyoneLevel ? 0 : rake, standings, winnerIds: everyoneLevel ? [] : winners.map(p => p.id) };
@@ -129,13 +129,13 @@ class Room {
   player(id) { return this.players.find(p => p.id === id); }
   inMatch() { return ["countdown", "question", "reveal"].includes(this.phase); }
 
-  addPlayer({ key = null, name, wallet = null, account = null, send = null, recent = [], paid = 0 }) {
+  addPlayer({ key = null, name, wallet = null, account = null, send = null, recent = [], paid = 0, look = null }) {
     this.lastActive = Date.now();
     // No two players in a room share a name, so nobody can pose as someone else
     const taken = n => this.active.some(o => o.name.toLowerCase() === n.toLowerCase());
     for (let i = 2, base = name; taken(name); i++) name = `${base} ${i}`;
     const p = {
-      id: randomFrom(BASE58, 10), key, name, wallet, account, send,
+      id: randomFrom(BASE58, 10), key, name, wallet, account, send, look,
       connected: Boolean(send), left: false, score: 0, answer: null,
       recent: new Set(recent), dropTimer: null,
       paid                              // lamports this player has in escrow for the next match
@@ -216,7 +216,7 @@ class Room {
       matchNo: this.matchNo,
       rematch: [...this.rematch],
       players: this.active.map(p => ({
-        id: p.id, name: p.name, wallet: short(p.wallet),
+        id: p.id, name: p.name, wallet: short(p.wallet), look: p.look || null,
         connected: p.connected, score: p.score, isHost: p.id === this.hostId, paid: p.paid > 0
       }))
     };

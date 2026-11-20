@@ -7,6 +7,7 @@
 const crypto = require("crypto");
 const { promisify } = require("util");
 const scrypt = promisify(crypto.scrypt);
+const { ITEMS, KINDS } = require("./items");
 
 const CURRENCIES = ["GC", "SC"];
 const UNIT = { GC: 1, SC: 100 };                // stored units per coin
@@ -97,7 +98,16 @@ CREATE TABLE IF NOT EXISTS redemptions (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-ALTER TABLE redemptions ADD COLUMN IF NOT EXISTS country TEXT;`;
+ALTER TABLE redemptions ADD COLUMN IF NOT EXISTS country TEXT;
+CREATE TABLE IF NOT EXISTS owned_items (
+  account_id INTEGER NOT NULL REFERENCES accounts(id),
+  item TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (account_id, item)
+);
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS look_avatar TEXT;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS look_frame TEXT;
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS look_color TEXT;`;
 
 const playerError = message => Object.assign(new Error(message), { userMessage: message });
 /* Turns Postgres's duplicate-key error into a message for the player */
@@ -200,6 +210,7 @@ async function createCoins(pool) {
     onChange: () => {},
 
     termsVersion: TERMS_VERSION,
+    items: ITEMS,
     pauses: PAUSES,
     blockReason,
 
@@ -240,7 +251,7 @@ async function createCoins(pool) {
 
     async account(id) {
       const r = await pool.query(`SELECT id, username, gc, sc, sc_locked, verified, last_daily, paused_until, pause_kind,
-        spend_limit, spend_limit_next, spend_limit_next_at FROM accounts WHERE id = $1 AND deleted_at IS NULL`, [id]);
+        spend_limit, spend_limit_next, spend_limit_next_at, look_avatar, look_frame, look_color FROM accounts WHERE id = $1 AND deleted_at IS NULL`, [id]);
       if (!r.rows.length) return null;
       const a = r.rows[0];
       const bought = (await pool.query("SELECT COUNT(*) AS n FROM purchases WHERE account_id = $1", [id])).rows[0];
@@ -253,8 +264,37 @@ async function createCoins(pool) {
         spendLimit: limitNow(a) == null ? null : Number(limitNow(a)),
         pendingLimit: a.spend_limit_next_at && ms(a.spend_limit_next_at) > Date.now()
           ? { cents: a.spend_limit_next == null ? null : Number(a.spend_limit_next), at: new Date(a.spend_limit_next_at).toISOString() } : null,
+        owned: (await pool.query("SELECT item FROM owned_items WHERE account_id = $1 ORDER BY created_at", [id])).rows.map(o => o.item),
+        look: { avatar: a.look_avatar, frame: a.look_frame, color: a.look_color },
         spentThisMonth: Number((await pool.query("SELECT COALESCE(SUM(usd_cents), 0) AS s FROM purchases WHERE account_id = $1 AND created_at >= $2", [id, monthStart()])).rows[0].s)
       };
+    },
+
+    /* Buys a Gold Coin item: the coins go and the item is the account's for good */
+    async buyItem(id, itemId) {
+      const item = Object.hasOwn(ITEMS, itemId) && ITEMS[itemId];
+      if (!item) throw playerError("There is no such item.");
+      const block = await blockReason(id);
+      if (block) throw playerError(block);
+      await tx(async client => {
+        const owned = await client.query("SELECT item FROM owned_items WHERE account_id = $1 AND item = $2", [id, itemId]);
+        if (owned.rows.length) throw playerError("You already own that.");
+        if (await move(client, id, "GC", -item.price, "item", itemId) === null) throw playerError(`You need ${item.price.toLocaleString("en")} Gold Coins for that.`);
+        await unique(client.query("INSERT INTO owned_items (account_id, item) VALUES ($1, $2)", [id, itemId]), "You already own that.");
+      });
+      onChange(id);
+    },
+
+    /* Wears an owned item, or takes off whatever is worn of that kind (itemId null) */
+    async equip(id, kind, itemId) {
+      if (!Object.hasOwn(KINDS, kind)) throw playerError("There is no such item.");
+      if (itemId !== null) {
+        if (!Object.hasOwn(ITEMS, itemId) || ITEMS[itemId].kind !== kind) throw playerError("There is no such item.");
+        const owned = await pool.query("SELECT item FROM owned_items WHERE account_id = $1 AND item = $2", [id, itemId]);
+        if (!owned.rows.length) throw playerError("Buy it first.");
+      }
+      await pool.query(`UPDATE accounts SET ${KINDS[kind]} = $1 WHERE id = $2`, [itemId, id]);
+      onChange(id);
     },
 
     async acceptTerms(id) {
@@ -315,6 +355,7 @@ async function createCoins(pool) {
         consents: await q("SELECT kind, version, accepted_at FROM consents WHERE account_id = $1 ORDER BY id"),
         ledger: await q("SELECT currency, delta, balance, reason, ref, created_at FROM ledger WHERE account_id = $1 ORDER BY id"),
         purchases: await q("SELECT pack, signature, usd_cents, created_at FROM purchases WHERE account_id = $1 ORDER BY created_at"),
+        items: await q("SELECT item, created_at FROM owned_items WHERE account_id = $1 ORDER BY created_at"),
         cashOuts: await q("SELECT id, amount, wallet, country, status, note, created_at, updated_at FROM redemptions WHERE account_id = $1 ORDER BY id"),
         activeSessions: Number((await q("SELECT COUNT(*) AS n FROM sessions WHERE account_id = $1"))[0].n)
       };

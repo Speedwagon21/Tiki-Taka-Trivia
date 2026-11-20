@@ -12,7 +12,7 @@ async function freshPool() {
   if (process.env.TEST_DATABASE_URL) {
     const { Pool } = require("pg");
     const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
-    await pool.query("DROP TABLE IF EXISTS consents, redemptions, purchases, ledger, sessions, accounts, meta");
+    await pool.query("DROP TABLE IF EXISTS owned_items, consents, redemptions, purchases, ledger, sessions, accounts, meta");
     return pool;
   }
   const { newDb } = require("pg-mem");
@@ -465,4 +465,56 @@ test("compliance over the connection: no Sweeps Coin play or cash-out from a blo
     if (saved === undefined) delete process.env.TRUST_PROXY; else process.env.TRUST_PROXY = saved;
     await on.stop();
   }
+});
+
+/* ---- Gold Coin items ---- */
+
+test("items: Gold Coins buy an avatar, frame or name colour once, and only owned items can be worn", async () => {
+  const pool = await freshPool(), coins = await createCoins(pool);
+  const { account } = await coins.register("ola", "password123", true);
+  await assert.rejects(coins.buyItem(account.id, "no-such-thing"), /no such item/);
+  await assert.rejects(coins.buyItem(account.id, "__proto__"), /no such item/);
+  await assert.rejects(coins.equip(account.id, "avatar", "av-goat"), /Buy it first/);
+  await coins.buyItem(account.id, "av-goat");                                  // 6,000 of the 10,000 welcome GC
+  await assert.rejects(coins.buyItem(account.id, "av-goat"), /already own/);
+  await assert.rejects(coins.buyItem(account.id, "fr-gold"), /need 8,000 Gold Coins/);
+  let a = await coins.account(account.id);
+  assert.equal(a.GC, 4000, "a refused purchase takes nothing");
+  assert.deepEqual(a.owned, ["av-goat"]);
+  await assert.rejects(coins.equip(account.id, "frame", "av-goat"), /no such item/, "an avatar isn't a frame");
+  await assert.rejects(coins.equip(account.id, "hat", null), /no such item/);
+  await coins.equip(account.id, "avatar", "av-goat");
+  assert.equal((await coins.account(account.id)).look.avatar, "av-goat");
+  await coins.equip(account.id, "avatar", null);
+  assert.equal((await coins.account(account.id)).look.avatar, null);
+  assert.deepEqual((await coins.exportData(account.id)).items.map(i => i.item), ["av-goat"]);
+  await coins.pause(account.id, "break-1");
+  await assert.rejects(coins.buyItem(account.id, "nc-green"), /taking a break/);
+  await ledgerMatches(pool);
+});
+
+test("items: what a player wears shows on everyone's room screen, and changes at once", async () => {
+  const { coins, port, stop } = await coinServer();
+  try {
+    const ana = await client(port, "look-ana"), ben = await client(port, "look-ben");
+    assert.equal(ana.inbox.find(m => m.type === "hello").coins.items["av-goat"].value, "🐐");
+    ana.send({ type: "register", username: "anal", password: "password123", acceptTerms: true });
+    await ana.next("account", m => m.token);
+    ana.send({ type: "buyItem", item: "av-lion" }); await ana.next("itemBought");
+    ana.send({ type: "equip", kind: "avatar", item: "av-lion" }); await ana.next("equipped");
+    ben.send({ type: "register", username: "benl", password: "password123", acceptTerms: true });
+    await ben.next("account", m => m.token);
+    ana.send({ type: "create", name: "Ana", stake: 10, currency: "GC" });
+    const { code } = await ana.next("room");
+    ben.send({ type: "join", name: "Ben", code });
+    const seen = await ben.next("room", m => m.players.length === 2);
+    assert.equal(seen.players.find(p => p.name === "Ana").look.avatar, "av-lion");
+    assert.equal(seen.players.find(p => p.name === "Ben").look.avatar, null);
+    ana.send({ type: "buyItem", item: "nc-purple" }); await ana.next("itemBought");
+    ana.send({ type: "equip", kind: "color", item: "nc-purple" }); await ana.next("equipped");
+    await ben.next("room", m => m.players.find(p => p.name === "Ana").look.color === "nc-purple");
+    ana.send({ type: "equip", kind: "frame", item: "fr-gold" });
+    assert.match((await ana.next("error", m => m.about === "items")).message, /Buy it first/);
+    ana.close(); ben.close();
+  } finally { await stop(); }
 });
