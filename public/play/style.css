@@ -412,7 +412,7 @@ dialog[open] { animation: zoom .2s ease-out; }
 #accountBtn small { color: var(--muted); font-weight: 500; }
 #accountDialog .stake-strip .t-note { display: block; color: var(--muted); font-size: .78rem; margin-top: 2px; }
 #accountDialog .stake-strip, #accountDialog .wallet-options { margin-bottom: 14px; }
-#accountDialog input[type=password] { width: 100%; background: var(--night); border: 1px solid var(--line); color: var(--text); border-radius: 10px; padding: 13px 14px; font: inherit; font-size: 1.05rem; }
+#accountDialog input[type=password], #accountDialog select { width: 100%; background: var(--night); border: 1px solid var(--line); color: var(--text); border-radius: 10px; padding: 13px 14px; font: inherit; font-size: 1.05rem; }
 #accountDialog .packs li { padding: 8px 12px; }
 #accountDialog > .dialog-body > div > .btn { margin-bottom: 10px; }
 /* Phones: the header holds the account and the wallet, so the name drops "Trivia" */
@@ -435,3 +435,12 @@ dialog[open] { animation: zoom .2s ease-out; }
 
 #accountDialog input[type=number] { width: 100%; font-family: var(--body); font-size: 1.05rem; padding: 13px 14px; }
 #accountDialog .dialog-body { max-height: calc(100vh - 32px); overflow-y: auto; }
+
+/* Account dialog: the change-of-terms and break notices, and the folding sections */
+#accountBody .draft { border: 1px solid var(--gold); color: var(--gold); border-radius: 10px; padding: 10px 14px; font-size: .85rem; margin: 0 0 16px; line-height: 1.5; }
+#accountBody .draft a { color: inherit; }
+#accountBody .draft .btn { margin-top: 10px; }
+.acct-more { border-top: 1px solid var(--line); padding: 12px 0 0; margin-top: 14px; }
+.acct-more summary { cursor: pointer; font-weight: 600; margin-bottom: 10px; }
+.acct-more .wallet-options { margin-bottom: 14px; }
+

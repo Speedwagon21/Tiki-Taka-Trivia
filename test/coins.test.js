@@ -3,14 +3,16 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const WebSocket = require("ws");
-const { createCoins, WELCOME, DAILY, PACKS, UNIT, SC_RAKE, REDEEM_MIN } = require("../server/coins");
+const { createCoins, WELCOME, DAILY, PACKS, UNIT, SC_RAKE, REDEEM_MIN, TERMS_VERSION } = require("../server/coins");
+const fs = require("fs");
+const { regionAllowed, isSanctioned, countryOf, LIST_FILE } = require("../server/compliance");
 const { createServer } = require("../server");
 
 async function freshPool() {
   if (process.env.TEST_DATABASE_URL) {
     const { Pool } = require("pg");
     const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
-    await pool.query("DROP TABLE IF EXISTS redemptions, purchases, ledger, sessions, accounts, meta");
+    await pool.query("DROP TABLE IF EXISTS consents, redemptions, purchases, ledger, sessions, accounts, meta");
     return pool;
   }
   const { newDb } = require("pg-mem");
@@ -32,12 +34,12 @@ async function ledgerMatches(pool) {
 
 test("accounts: sign up with welcome coins, log in, resume and log out", async () => {
   const pool = await freshPool(), coins = await createCoins(pool);
-  const { token, account } = await coins.register("Ana_9", "correct horse");
+  const { token, account } = await coins.register("Ana_9", "correct horse", true);
   assert.equal(account.username, "ana_9");
   assert.deepEqual([account.GC, account.SC], [WELCOME.GC, WELCOME.SC]);
-  await assert.rejects(coins.register("ANA_9", "another password"), /taken/);
-  await assert.rejects(coins.register("a", "correct horse"), /username/);
-  await assert.rejects(coins.register("bob", "short"), /8 characters/);
+  await assert.rejects(coins.register("ANA_9", "another password", true), /taken/);
+  await assert.rejects(coins.register("a", "correct horse", true), /username/);
+  await assert.rejects(coins.register("bob", "short", true), /8 characters/);
   await assert.rejects(coins.login("ana_9", "wrong password"), /Wrong username or password/);
   await assert.rejects(coins.login("nobody", "correct horse"), /Wrong username or password/);
   const again = await coins.login("ANA_9", "correct horse");
@@ -55,7 +57,7 @@ test("coins: the daily claim works once a day, and a balance can't be overspent"
   const pool = await freshPool(), coins = await createCoins(pool);
   const changed = [];
   coins.onChange = id => changed.push(id);
-  const { account } = await coins.register("cyan", "password123");
+  const { account } = await coins.register("cyan", "password123", true);
   assert.equal(account.dailyReady, true);
   await coins.claimDaily(account.id);
   await assert.rejects(coins.claimDaily(account.id), /today's free coins/);
@@ -71,7 +73,7 @@ test("coins: the daily claim works once a day, and a balance can't be overspent"
 
 test("coins: packs credit Gold Coins plus free Sweeps Coins, once per payment; the welcome offer only first", async () => {
   const pool = await freshPool(), coins = await createCoins(pool);
-  const { account } = await coins.register("dani", "password123");
+  const { account } = await coins.register("dani", "password123", true);
   assert.equal(account.firstPurchase, true);
   assert.equal(await coins.mayBuy(account.id, "welcome"), true);
   await coins.creditPack(account.id, "welcome", "sig-1");
@@ -93,7 +95,7 @@ test("coins: packs credit Gold Coins plus free Sweeps Coins, once per payment; t
 // Real Postgres only: pg-mem can't run the CREATE TABLE IF NOT EXISTS setup twice on one database
 test("coins: an older database's whole Sweeps Coins become cents, once", { skip: !process.env.TEST_DATABASE_URL && "needs TEST_DATABASE_URL" }, async () => {
   const pool = await freshPool(), coins = await createCoins(pool);
-  const { account } = await coins.register("eli", "password123");
+  const { account } = await coins.register("eli", "password123", true);
   // Pretend the database is from before cents: whole coins and no conversion mark
   await pool.query("UPDATE accounts SET sc = 3 WHERE id = $1", [account.id]);
   await pool.query("UPDATE ledger SET delta = 3, balance = 3 WHERE currency = 'SC' AND account_id = $1", [account.id]);
@@ -160,9 +162,9 @@ test("coin rooms: stakes come from accounts, need no wallet, and the winner take
   ana.send({ type: "create", name: "Ana", stake: 1, currency: "SC" });
   assert.match((await ana.next("error")).message, /Sign in/);
 
-  ana.send({ type: "register", username: "ana", password: "password123" });
+  ana.send({ type: "register", username: "ana", password: "password123", acceptTerms: true });
   const signedIn = await ana.next("account", m => m.token);
-  ben.send({ type: "register", username: "ben", password: "password123" });
+  ben.send({ type: "register", username: "ben", password: "password123", acceptTerms: true });
   await ben.next("account", m => m.token);
 
   // More than the balance is refused; less than a cent is refused; Gold Coins are whole
@@ -223,7 +225,7 @@ test("coin rooms: stakes come from accounts, need no wallet, and the winner take
 test("coin rooms: leaving a waiting room or cancelling a search gives the coins back", async () => {
   const { pool, port, stop } = await coinServer();
   const cy = await client(port, "coin-cy");
-  cy.send({ type: "register", username: "cyril", password: "password123" });
+  cy.send({ type: "register", username: "cyril", password: "password123", acceptTerms: true });
   await cy.next("account", m => m.token);
 
   cy.send({ type: "create", name: "Cy", stake: 500, currency: "GC" });
@@ -253,7 +255,7 @@ test("coin rooms: leaving a waiting room or cancelling a search gives the coins 
 
 test("cash-out: free coins must be played first, then a verified player can cash out 50 SC or more", async () => {
   const pool = await freshPool(), coins = await createCoins(pool);
-  const { account } = await coins.register("fay", "password123");
+  const { account } = await coins.register("fay", "password123", true);
   await coins.claimDaily(account.id);
   let a = await coins.account(account.id);
   assert.equal(a.redeemable, 0, "free sign-up and daily coins are not redeemable yet");
@@ -292,7 +294,7 @@ test("cash-out: switched off unless the server opens it", async () => {
   const off = await coinServer();
   const c = await client(off.port, "redeem-off");
   assert.equal(c.inbox.find(m => m.type === "hello").coins.redemption, false);
-  c.send({ type: "register", username: "gus", password: "password123" });
+  c.send({ type: "register", username: "gus", password: "password123", acceptTerms: true });
   await c.next("account", m => m.token);
   c.send({ type: "redeem", amount: 50, wallet: "7xQ9aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
   assert.match((await c.next("error")).message, /isn't open yet/);
@@ -301,7 +303,7 @@ test("cash-out: switched off unless the server opens it", async () => {
   const on = await coinServer({ redemption: true });
   const d = await client(on.port, "redeem-on");
   assert.equal(d.inbox.find(m => m.type === "hello").coins.redemption, true);
-  d.send({ type: "register", username: "hal", password: "password123" });
+  d.send({ type: "register", username: "hal", password: "password123", acceptTerms: true });
   const acct = (await d.next("account", m => m.token)).account;
   await on.coins.setVerified("hal", true);
   await on.coins.bank("SC").pay([{ to: acct.id, amount: 5500, reason: "win" }]);
@@ -314,4 +316,153 @@ test("cash-out: switched off unless the server opens it", async () => {
   d.close();
   await ledgerMatches(on.pool);
   await on.stop();
+});
+
+/* ---- terms, privacy, responsible play, compliance ---- */
+
+test("terms: sign-up records the accepted version; an account without it can't play until it accepts", async () => {
+  const pool = await freshPool(), coins = await createCoins(pool);
+  await assert.rejects(coins.register("jo", "password123"), /accept the terms/);
+  await assert.rejects(coins.register("joe", "password123", false), /accept the terms/);
+  const { account } = await coins.register("joe", "password123", true);
+  assert.equal(account.termsCurrent, true);
+  const rows = (await pool.query("SELECT version FROM consents WHERE account_id = $1", [account.id])).rows;
+  assert.deepEqual(rows.map(r => r.version), [TERMS_VERSION]);
+  // As if the terms changed after sign-up
+  await pool.query("UPDATE consents SET version = 'old' WHERE account_id = $1", [account.id]);
+  assert.equal((await coins.account(account.id)).termsCurrent, false);
+  await assert.rejects(coins.take(account.id, "GC", 100, "x"), /Accept the updated terms/);
+  await coins.acceptTerms(account.id);
+  assert.equal(await coins.take(account.id, "GC", 100, "x"), true);
+  assert.equal(Number((await pool.query("SELECT COUNT(*) AS n FROM consents WHERE account_id = $1", [account.id])).rows[0].n), 2, "every acceptance is kept");
+});
+
+test("responsible play: a monthly limit stops purchases; lowering is immediate, raising waits a day", async () => {
+  const pool = await freshPool(), coins = await createCoins(pool);
+  const { account } = await coins.register("kim", "password123", true);
+  await coins.setSpendLimit(account.id, 500);
+  assert.equal((await coins.account(account.id)).spendLimit, 500, "a new limit is lowering, so it's immediate");
+  assert.equal(await coins.checkPurchase(account.id, "starter"), null, "$4.99 fits in $5.00");
+  await coins.creditPack(account.id, "starter", "sig-k1");
+  assert.equal((await coins.account(account.id)).spentThisMonth, 499);
+  assert.match(await coins.checkPurchase(account.id, "starter"), /monthly spending limit of \$5.00/);
+  await coins.setSpendLimit(account.id, 10000);
+  let a = await coins.account(account.id);
+  assert.equal(a.spendLimit, 500, "a raise doesn't apply yet");
+  assert.equal(a.pendingLimit.cents, 10000);
+  assert.match(await coins.checkPurchase(account.id, "starter"), /spending limit/);
+  await pool.query("UPDATE accounts SET spend_limit_next_at = $1 WHERE id = $2", [new Date(Date.now() - 1000), account.id]);
+  a = await coins.account(account.id);
+  assert.equal(a.spendLimit, 10000, "the raise applies once its day has passed");
+  assert.equal(await coins.checkPurchase(account.id, "starter"), null);
+  await coins.setSpendLimit(account.id, null);
+  assert.equal((await coins.account(account.id)).spendLimit, 10000, "removing a limit also waits a day");
+});
+
+test("responsible play: a break or self-exclusion stops play, free coins and purchases, and can't be shortened", async () => {
+  const pool = await freshPool(), coins = await createCoins(pool);
+  const { account } = await coins.register("lou", "password123", true);
+  await coins.pause(account.id, "exclude-182");
+  await coins.pause(account.id, "break-1");                     // shorter: ignored
+  const a = await coins.account(account.id);
+  assert.equal(a.pauseKind, "exclusion");
+  assert.ok(new Date(a.pausedUntil) > new Date(Date.now() + 150 * 864e5), "the longer exclusion stands");
+  await assert.rejects(coins.take(account.id, "GC", 100, "x"), /excluded yourself until/);
+  await assert.rejects(coins.claimDaily(account.id), /excluded yourself/);
+  assert.match(await coins.checkPurchase(account.id, "starter"), /excluded yourself/);
+  await assert.rejects(coins.pause(account.id, "forever-and-ever"), /how long/);
+});
+
+test("your data: download everything held, and close the account", async () => {
+  const pool = await freshPool(), coins = await createCoins(pool);
+  const { account, token } = await coins.register("max", "password123", true);
+  await coins.claimDaily(account.id);
+  const data = await coins.exportData(account.id);
+  assert.equal(data.account.username, "max");
+  assert.ok(!("pass_hash" in data.account), "the export never includes the password hash");
+  assert.deepEqual(data.ledger.map(l => l.reason), ["welcome", "welcome", "daily", "daily"]);
+  assert.equal(data.consents[0].version, TERMS_VERSION);
+
+  await assert.rejects(coins.deleteAccount(account.id, "wrong password"), /password isn't right/);
+  await coins.deleteAccount(account.id, "password123");
+  assert.equal(await coins.account(account.id), null);
+  assert.equal(await coins.resume(token), null, "its sessions are gone");
+  await assert.rejects(coins.login("max", "password123"), /Wrong username or password/);
+  const kept = (await pool.query("SELECT username, gc, sc, deleted_at FROM accounts WHERE id = $1", [account.id])).rows[0];
+  assert.deepEqual([kept.username, Number(kept.gc), Number(kept.sc)], ["deleted-" + account.id, 0, 0]);
+  assert.ok(kept.deleted_at);
+  assert.ok((await pool.query("SELECT COUNT(*) AS n FROM ledger WHERE account_id = $1", [account.id])).rows[0].n > 0, "coin records are kept");
+  const again = await coins.register("max", "password123", true);
+  assert.notEqual(again.account.id, account.id, "the name is free again");
+  await ledgerMatches(pool);
+});
+
+test("closing an account waits for a pending cash-out", async () => {
+  const pool = await freshPool(), coins = await createCoins(pool);
+  const { account } = await coins.register("ned", "password123", true);
+  await coins.setVerified("ned", true);
+  await coins.bank("SC").pay([{ to: account.id, amount: 6000, reason: "win" }]);
+  await coins.requestRedemption(account.id, 5000, "7xQ9aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "GB");
+  assert.equal((await coins.exportData(account.id)).cashOuts[0].country, "GB");
+  await assert.rejects(coins.deleteAccount(account.id, "password123"), /Wait for your cash-out/);
+});
+
+test("compliance: blocked countries and the sanctions list", () => {
+  const saved = { ...process.env };
+  try {
+    delete process.env.TRUST_PROXY;
+    assert.equal(countryOf({ headers: { "cf-ipcountry": "IR" } }), null, "the country header is only trusted behind the proxy");
+    process.env.TRUST_PROXY = "1";
+    assert.equal(countryOf({ headers: { "cf-ipcountry": "ir" } }), "IR");
+    assert.equal(countryOf({ headers: { "cf-ipcountry": "XX" } }), null);
+    assert.equal(regionAllowed("IR"), false, "comprehensively sanctioned countries are blocked by default");
+    assert.equal(regionAllowed("T1"), false, "Tor is blocked");
+    assert.equal(regionAllowed("GB"), true);
+    assert.equal(regionAllowed(null), true, "an unknown country may still play and buy");
+    assert.equal(regionAllowed(null, { cashOut: true }), false, "but not cash out behind the proxy");
+    process.env.BLOCKED_COUNTRIES = "US,GB";
+    assert.equal(regionAllowed("GB"), false, "a lawyer's list replaces the default");
+    assert.equal(regionAllowed("IR"), true);
+  } finally { process.env = saved; }
+
+  const lines = fs.readFileSync(LIST_FILE, "utf8").split("\n");
+  const sol = lines[lines.indexOf("# SOL") + 1];
+  assert.ok(sol && isSanctioned(sol), "a Solana address on the OFAC list is caught");
+  assert.equal(isSanctioned("7xQ9aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), false);
+});
+
+test("compliance over the connection: no Sweeps Coin play or cash-out from a blocked country, no payout to a listed wallet", async () => {
+  const saved = process.env.TRUST_PROXY;
+  process.env.TRUST_PROXY = "1";
+  const on = await coinServer({ redemption: true });
+  try {
+    const connect = (key, country) => new Promise(resolve => {
+      const ws = new WebSocket(`ws://localhost:${on.port}/ws`, { headers: { "cf-ipcountry": country } });
+      const inbox = [];
+      ws.on("message", raw => inbox.push(JSON.parse(raw)));
+      ws.on("open", () => { ws.send(JSON.stringify({ type: "hello", key: key.padEnd(16, "0") })); resolve({ ws, inbox, send: m => ws.send(JSON.stringify(m)) }); });
+    });
+    const wait = async (c, pred) => { for (let i = 0; i < 100; i++) { const m = c.inbox.find(pred); if (m) return m; await new Promise(r => setTimeout(r, 20)); } throw new Error("no reply"); };
+
+    const iran = await connect("from-iran", "IR");
+    assert.equal((await wait(iran, m => m.type === "hello")).coins.regionAllowed, false);
+    iran.send({ type: "register", username: "ozzy", password: "password123", acceptTerms: true });
+    await wait(iran, m => m.type === "account" && m.token);
+    iran.send({ type: "create", name: "Oz", stake: 0.5, currency: "SC" });
+    assert.match((await wait(iran, m => m.type === "error")).message, /aren't available where you are/);
+    iran.ws.close();
+
+    const uk = await connect("from-uk", "GB");
+    uk.send({ type: "register", username: "pia", password: "password123", acceptTerms: true });
+    const acct = (await wait(uk, m => m.type === "account" && m.token)).account;
+    await on.coins.setVerified("pia", true);
+    await on.coins.bank("SC").pay([{ to: acct.id, amount: 6000, reason: "win" }]);
+    const lines = fs.readFileSync(LIST_FILE, "utf8").split("\n");
+    uk.send({ type: "redeem", amount: 50, wallet: lines[lines.indexOf("# SOL") + 1] });
+    assert.match((await wait(uk, m => m.type === "error" && m.about === "redeem")).message, /can't pay that wallet/);
+    uk.ws.close();
+  } finally {
+    if (saved === undefined) delete process.env.TRUST_PROXY; else process.env.TRUST_PROXY = saved;
+    await on.stop();
+  }
 });

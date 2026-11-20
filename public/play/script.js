@@ -59,13 +59,21 @@ function show(id) {
   if (heading && id !== "arena") heading.focus({ preventScroll: true });
 }
 
-document.querySelectorAll("[data-open-terms]").forEach(a => a.addEventListener("click", e => {
-  e.preventDefault();
+const PAGES = ["terms", "privacy"];
+function openPage(id) {
   if (app.screen === "arena") return;
-  if (app.screen !== "terms") app.beforeTerms = app.screen;
-  show("terms");
-}));
-$("termsBack").onclick = () => show(screenForRoom() || app.beforeTerms);
+  if ($("accountDialog").open) $("accountDialog").close();
+  if (!PAGES.includes(app.screen)) app.beforeTerms = app.screen;
+  show(id);
+}
+document.addEventListener("click", e => {
+  const a = e.target.closest('[data-open-terms], a[href="#terms"], a[href="#privacy"]');
+  if (!a) return;
+  e.preventDefault();
+  openPage(a.getAttribute("href").slice(1));
+});
+addEventListener("hashchange", () => { const id = location.hash.slice(1); if (PAGES.includes(id)) openPage(id); });
+$("termsBack").onclick = $("privacyBack").onclick = () => show(screenForRoom() || app.beforeTerms || "home");
 
 /* Which screen the room's phase belongs on */
 function screenForRoom() {
@@ -224,6 +232,27 @@ function handle(m) {
       if (m.token) { $("accountDialog").close(); setMsg("storeMsg", ""); toast(`Signed in as ${m.account.username}`); }
       return;
     case "claimed": setMsg("accountMsg", "Today's free coins are in your balance.", true); return;
+    case "accepted": setMsg("accountMsg", "Thanks. You're all set to play.", true); return;
+    case "limitSet": setMsg("accountMsg", "Spending limit saved.", true); return;
+    case "paused":
+      resetRoom(); stopSearch();
+      if (app.screen !== "home") show("home");
+      setMsg("accountMsg", "Done. Your account is paused for the time you chose.", true);
+      return;
+    case "export": {          // the player's data as a JSON file
+      const url = URL.createObjectURL(new Blob([JSON.stringify(m.data, null, 2)], { type: "application/json" }));
+      el("a", { href: url, download: `tiki-taka-data-${new Date().toISOString().slice(0, 10)}.json` }).click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setMsg("accountMsg", "Your data is downloading.", true);
+      return;
+    }
+    case "deleted":
+      store.set("tt-session", "");
+      app.account = null;
+      renderCoins();
+      $("accountDialog").close();
+      toast("Your account is closed.");
+      return;
     case "bought":
       busy(false);
       setMsg(app.payMsg, `Added ${fmt(m.gc)} GC and ${fmt(m.sc)} free SC to your balance.`, true);
@@ -255,7 +284,7 @@ function handle(m) {
       busy(false);
       if (m.about === "intent") { if (intentWaiter) intentWaiter.reject(new Error(m.message)); return; }
       if (m.about === "deposit") return setMsg(app.payMsg, m.message);
-      if (m.about === "auth" || m.about === "redeem") return setMsg("accountMsg", m.message);
+      if (m.about === "auth" || m.about === "redeem" || m.about === "rg") return setMsg("accountMsg", m.message);
       if (m.about === "store") { busy(false); return setMsg(app.screen === "store" ? "storeMsg" : "accountMsg", m.message); }
       if (m.about === "lookup" || m.about === "join") {
         if (m.about === "lookup") app.lookup = null;
@@ -1175,14 +1204,19 @@ function renderAccount() {
     $("accountTitle").textContent = "Sign in to play for coins";
     const user = el("input", { type: "text", id: "accUser", autocomplete: "username", maxLength: 20, spellcheck: false });
     const pass = el("input", { type: "password", id: "accPass", autocomplete: "current-password", maxLength: 200 });
+    const agree = el("input", { type: "checkbox", id: "accAgree" });
     const go = type => () => {
       setMsg("accountMsg", "");
-      send({ type, username: user.value.trim(), password: pass.value });
+      if (type === "register" && !agree.checked) return setMsg("accountMsg", "Confirm you are 18 or older and accept the terms and privacy notice.");
+      send({ type, username: user.value.trim(), password: pass.value, ...(type === "register" ? { acceptTerms: true } : {}) });
     };
     body.append(
       el("p", { className: "sub tight" }, "New accounts start with 10,000 Gold Coins and 1 Sweeps Coin."),
       el("label", { className: "field" }, el("span", {}, "Username"), user),
       el("label", { className: "field" }, el("span", {}, "Password (8 characters or more)"), pass),
+      el("label", { className: "consent" }, agree, el("span", {}, "New account: I am 18 or older and accept the ",
+        el("a", { href: "#terms" }, "terms"), " and ",
+        el("a", { href: "#privacy" }, "privacy notice"), ".")),
       el("div", { className: "wallet-options" },
         el("button", { className: "btn solid wide", type: "button", onclick: go("login") }, "Sign in"),
         el("button", { className: "btn wide", type: "button", onclick: go("register") }, "Create account")));
@@ -1190,19 +1224,25 @@ function renderAccount() {
     return;
   }
   $("accountTitle").textContent = a.username;
+  if (!a.termsCurrent) body.append(el("div", { className: "draft" },
+    "Our ", el("a", { href: "#terms" }, "terms"), " and ", el("a", { href: "#privacy" }, "privacy notice"),
+    " have changed. Accept them to keep playing.",
+    el("button", { className: "btn solid wide", type: "button", onclick: () => send({ type: "acceptTerms" }) }, "I accept")));
+  if (a.pausedUntil) body.append(el("div", { className: "draft" },
+    `${a.pauseKind === "exclusion" ? "You've excluded yourself" : "You're taking a break"} until ${longDate(a.pausedUntil)}. You can't play, claim free coins or buy coins until then.`));
   const balance = (code, name, note) => el("div", {}, el("small", {}, name), el("strong", {}, coinText(code, a[code])), el("span", { className: "t-note" }, note));
   body.append(
     el("div", { className: "stake-strip" },
       balance("GC", "Gold Coins", "For fun. Never cashed out."),
       balance("SC", "Sweeps Coins", "Free. Played for prizes.")),
     el("button", {
-      className: "btn solid wide", type: "button", disabled: !a.dailyReady,
+      className: "btn solid wide", type: "button", disabled: !a.dailyReady || Boolean(a.pausedUntil),
       onclick: () => { setMsg("accountMsg", ""); send({ type: "claimDaily" }); }
-    }, a.dailyReady ? "Claim today's free coins" : "Free coins claimed today. Back tomorrow."));
+    }, a.pausedUntil ? "Free coins are paused" : a.dailyReady ? "Claim today's free coins" : "Free coins claimed today. Back tomorrow."));
   body.append(el("button", {
     className: "btn wide", type: "button", onclick: () => { $("accountDialog").close(); openStore(); }
   }, "Open the coin store"));
-  body.append(...cashOutSection(a));
+  body.append(...cashOutSection(a), safetySection(a), dataSection());
   body.append(el("button", {
     className: "btn ghost wide", type: "button",
     onclick: () => { send({ type: "logout", session: store.get("tt-session") }); store.set("tt-session", ""); }
@@ -1229,6 +1269,63 @@ function cashOutSection(a) {
       el("span", { className: "pname" }, coinText("SC", r.amount), el("em", {}, ` · ${new Date(r.at).toLocaleDateString()}`)),
       el("span", { className: "tag" + (r.status === "paid" ? " host" : "") }, r.status === "pending" ? "Waiting for review" : r.status === "paid" ? "Paid" : "Returned"))))] : [])
   ];
+}
+
+const longDate = iso => new Date(iso).getFullYear() > new Date().getFullYear() + 50 ? "you ask us to lift it" : new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" });
+const dollars = cents => `$${(cents / 100).toFixed(2)}`;
+
+/* A folding account section that stays open when the account redraws */
+const openSections = new Set();
+const fold = (title, ...kids) => el("details", { className: "acct-more", open: openSections.has(title),
+  ontoggle: e => openSections[e.target.open ? "add" : "delete"](title) }, el("summary", {}, title), ...kids);
+
+/* Spending limit, breaks and self-exclusion */
+function safetySection(a) {
+  const limit = el("input", { type: "number", min: 0, step: "1", inputMode: "decimal", placeholder: "e.g. 50" });
+  const pause = choice => {
+    const long = choice.startsWith("exclude");
+    if (long && !confirm("Self-exclusion can't be shortened or undone early. Exclude yourself?")) return;
+    setMsg("accountMsg", "");
+    send({ type: "pause", choice });
+  };
+  const excludeFor = el("select", {},
+    el("option", { value: "exclude-182" }, "6 months"), el("option", { value: "exclude-365" }, "1 year"), el("option", { value: "exclude-forever" }, "Permanently"));
+  const p = a.pendingLimit;
+  return fold("Play safely",
+    el("p", { className: "hint" }, `Spent on coin packs this month: ${dollars(a.spentThisMonth)}. ` +
+      (a.spendLimit == null ? "No monthly limit set." : `Monthly limit: ${dollars(a.spendLimit)}.`) +
+      (p ? ` Changing to ${p.cents == null ? "no limit" : dollars(p.cents)} on ${longDate(p.at)}.` : "") +
+      " A lower limit applies at once; a higher one or removing it waits 24 hours."),
+    el("label", { className: "field" }, el("span", {}, "Monthly spending limit ($)"), limit),
+    el("div", { className: "wallet-options" },
+      el("button", { className: "btn wide", type: "button", onclick: () => { setMsg("accountMsg", ""); send({ type: "setLimit", usd: limit.value === "" ? NaN : Number(limit.value) }); } }, "Set limit"),
+      a.spendLimit != null && !(p && p.cents == null) ? el("button", { className: "btn ghost wide", type: "button", onclick: () => send({ type: "setLimit", usd: null }) }, "Remove limit") : null),
+    el("h3", { className: "list-title" }, "Take a break"),
+    el("p", { className: "hint" }, "Stop playing and buying for a while. A break can be made longer but not shorter."),
+    el("div", { className: "wallet-options" },
+      ...[["break-1", "24 hours"], ["break-7", "7 days"], ["break-30", "30 days"]].map(([c, t]) =>
+        el("button", { className: "btn wide", type: "button", onclick: () => pause(c) }, t))),
+    el("h3", { className: "list-title" }, "Self-exclusion"),
+    el("p", { className: "hint" }, "For a longer stop. If gambling is causing you harm, a free local problem-gambling helpline can help."),
+    el("label", { className: "field" }, el("span", {}, "Exclude me for"), excludeFor),
+    el("button", { className: "btn wide", type: "button", onclick: () => pause(excludeFor.value) }, "Exclude me"));
+}
+
+/* Download or delete what we hold */
+function dataSection() {
+  const pass = el("input", { type: "password", autocomplete: "current-password", maxLength: 200 });
+  return fold("Your data",
+    el("p", { className: "hint" }, "Download everything we hold about your account, or close it. See the ",
+      el("a", { href: "#privacy" }, "privacy notice"), "."),
+    el("button", { className: "btn wide", type: "button", onclick: () => send({ type: "exportData" }) }, "Download my data"),
+    el("h3", { className: "list-title" }, "Close my account"),
+    el("p", { className: "hint" }, "Your coins are removed and you can't get the account back. We keep payment and coin records the law requires, without your username."),
+    el("label", { className: "field" }, el("span", {}, "Password to confirm"), pass),
+    el("button", { className: "btn ghost wide", type: "button", onclick: () => {
+      if (!confirm("Close your account for good? Your coins will be gone.")) return;
+      setMsg("accountMsg", "");
+      send({ type: "deleteAccount", password: pass.value });
+    } }, "Close my account"));
 }
 
 function openAccount() {
@@ -1300,7 +1397,7 @@ async function buyPack(id) {
     codeInput.value = app.pendingCode;
     history.replaceState(null, "", location.pathname);   // a refresh shouldn't re-run the invite
   }
-  if (location.hash === "#terms") show("terms");      // the landing page links straight to the terms
+  if (PAGES.includes(location.hash.slice(1))) show(location.hash.slice(1));      // the landing page links straight to these
   renderWallet();
   renderJoin();
   connect();

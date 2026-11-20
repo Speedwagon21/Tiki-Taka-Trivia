@@ -42,6 +42,17 @@ Built but switched off. Set `REDEMPTION=1` only once a lawyer has cleared cash-o
 - A player must be marked verified (identity and age checked) before their first cash-out.
 - Requests take the coins off the balance and wait for a person. Review them with `DATABASE_URL=... node scripts/redemptions.js list`, then `paid <id> <transaction>` after sending the USDC, or `reject <id> <reason>` to return the coins. `verify <username>` marks an identity as checked.
 
+## Player protection and compliance
+
+- **Terms and privacy.** Sign-up needs an 18+ and terms checkbox. Each acceptance is stored in `consents` with its version and time. To change the terms, edit them, then bump `TERMS_VERSION` in `server/coins.js`. Every player then has to accept again in their account before they can play or buy. The privacy notice is at `/play/#privacy`.
+- **Your data.** From the account panel, a player can download everything held about them as JSON, or close their account with their password. Closing removes the username, password and sessions. Coin, purchase and cash-out records stay, without the name. Closing waits while a cash-out is pending.
+- **Play safely.**
+  - A monthly spending limit on coin packs. Lowering it applies at once; raising or removing it waits 24 hours.
+  - Breaks of 24 hours, 7 days or 30 days, and self-exclusion for 6 months, 1 year or permanently. None of these can be shortened.
+  - A paused account can't play, claim free coins or buy.
+- **Blocked places.** Behind Cloudflare (`TRUST_PROXY=1`), the `cf-ipcountry` header gives the player's country. `BLOCKED_COUNTRIES` (ISO codes, comma-separated; default `CU,IR,KP,SY`) can't buy packs, play for Sweeps Coins or cash out. Tor is always blocked. A cash-out from an unknown country is refused.
+- **Sanctioned wallets.** `data/sanctioned-wallets.txt` holds the US Treasury OFAC list of wallet addresses. Cash-outs to a listed wallet and payments from one are refused and logged. To refresh the list, run `node scripts/update-sanctions.js`, then commit and redeploy.
+
 ## Real stakes on devnet (optional)
 
 By default every stake is simulated. Set `ESCROW_SECRET` to switch SOL rooms to real transfers of test SOL on Solana devnet:

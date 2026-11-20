@@ -8,6 +8,7 @@ const { RoomManager } = require("./game");
 
 const { createEscrow } = require("./escrow");
 const { createCoins, REDEEM_MIN } = require("./coins");
+const { countryOf, regionAllowed, isSanctioned } = require("./compliance");
 
 const PUBLIC_DIR = path.join(__dirname, "..", "public");
 const WEB3_BUNDLE = path.join(__dirname, "..", "node_modules", "@solana", "web3.js", "lib", "index.iife.min.js");
@@ -132,6 +133,7 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
 
   wss.on("connection", (ws, req) => {
     const ip = clientIp(req);
+    const country = countryOf(req);       // where the player is, for blocked places (server/compliance.js)
     if (ip) perIp.set(ip, (perIp.get(ip) || 0) + 1);
     ws.on("close", () => {
       lookups.delete(ws); authTries.delete(ws);
@@ -172,7 +174,11 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
     const takeCoins = async (w, currency, amount, about) => {
       const no = message => { send({ type: "error", message, about }); return false; };
       if (!account) return no("Sign in to play for coins.");
-      if (!(await coins.take(account, currency, amount, "stake"))) return no(`You don't have ${(amount / coins.unit[currency]).toLocaleString("en")} ${coinName(currency)}.`);
+      if (currency === "SC" && !regionAllowed(country)) return no("Sweeps Coin games aren't available where you are.");
+      let taken;
+      try { taken = await coins.take(account, currency, amount, "stake"); }
+      catch (err) { if (!err.userMessage) throw err; return no(err.userMessage); }    // a break, self-exclusion or new terms
+      if (!taken) return no(`You don't have ${(amount / coins.unit[currency]).toLocaleString("en")} ${coinName(currency)}.`);
       Object.assign(w, { account, paid: amount });
       if (ws.readyState === WebSocket.OPEN) return true;
       manager.refund(w, currency);
@@ -219,7 +225,8 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
           type: "hello", resumed: Boolean(entry), escrow: escrow ? { address: escrow.address } : null, cryptoStakes,
           coins: coins ? {
             packs: escrow ? Object.fromEntries(Object.entries(coins.packs).map(([id, p]) => [id, { ...p, lamports: packLamports(p) }])) : null,
-            redemption, redeemMin: REDEEM_MIN
+            redemption, redeemMin: REDEEM_MIN, termsVersion: coins.termsVersion, pauses: Object.keys(coins.pauses),
+            regionAllowed: regionAllowed(country)
           } : null
         });
         const id = coins && await coins.resume(msg.session);
@@ -241,7 +248,7 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
           if (!slot || now - slot.start > 60000) authTries.set(id, { start: now, count: 1 });
           else if (++slot.count > 10) return send({ type: "error", message: "Too many tries. Wait a minute and try again.", about: "auth" });
           try {
-            const r = msg.type === "register" ? await coins.register(msg.username, msg.password) : await coins.login(msg.username, msg.password);
+            const r = msg.type === "register" ? await coins.register(msg.username, msg.password, msg.acceptTerms === true) : await coins.login(msg.username, msg.password);
             return signIn(r.account.id, r.token);
           } catch (err) {
             if (!err.userMessage) throw err;
@@ -261,7 +268,13 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
           const amount = cleanCoinStake(msg.amount, "SC");
           if (!wallet) return send({ type: "error", message: "Enter the Solana wallet address to pay.", about: "redeem" });
           if (amount === null) return send({ type: "error", message: "Enter how many Sweeps Coins to cash out.", about: "redeem" });
-          try { await coins.requestRedemption(account, unitsFor("SC", amount), wallet); }
+          if (!regionAllowed(country, { cashOut: true })) return send({ type: "error", message: "Cashing out isn't available where you are.", about: "redeem" });
+          if (isSanctioned(wallet)) {
+            // Never pay a sanctioned wallet; the request is refused and logged for whoever reviews cash-outs
+            console.warn("SANCTIONS: cash-out to a listed wallet refused", JSON.stringify({ account, wallet, country }));
+            return send({ type: "error", message: "We can't pay that wallet. Contact us if you think this is a mistake.", about: "redeem" });
+          }
+          try { await coins.requestRedemption(account, unitsFor("SC", amount), wallet, country); }
           catch (err) { if (!err.userMessage) throw err; return send({ type: "error", message: err.userMessage, about: "redeem" }); }
           send({ type: "redeemed" });
           return send({ type: "redemptions", list: await coins.redemptions(account) });
@@ -269,6 +282,36 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
         case "redemptions":
           if (!coins || !account) return;
           return send({ type: "redemptions", list: await coins.redemptions(account) });
+        case "acceptTerms":
+          if (!coins || !account) return;
+          await coins.acceptTerms(account);
+          return send({ type: "accepted" });
+        case "setLimit": {        // a monthly spending limit in dollars, or null to remove it
+          if (!coins || !account) return;
+          const usd = msg.usd === null ? null : Number(msg.usd);
+          if (usd !== null && !(Number.isFinite(usd) && usd >= 0)) return send({ type: "error", message: "Enter a monthly limit in dollars.", about: "rg" });
+          try { await coins.setSpendLimit(account, usd === null ? null : Math.round(usd * 100)); return send({ type: "limitSet" }); }
+          catch (err) { if (!err.userMessage) throw err; return send({ type: "error", message: err.userMessage, about: "rg" }); }
+        }
+        case "pause": {           // a break or self-exclusion
+          if (!coins || !account) return;
+          try { await coins.pause(account, msg.choice); }
+          catch (err) { if (!err.userMessage) throw err; return send({ type: "error", message: err.userMessage, about: "rg" }); }
+          manager.leaveCurrent(key);       // stepping away means leaving any room or search now
+          return send({ type: "paused" });
+        }
+        case "exportData":
+          if (!coins || !account) return;
+          return send({ type: "export", data: await coins.exportData(account) });
+        case "deleteAccount": {
+          if (!coins || !account) return;
+          try { await coins.deleteAccount(account, msg.password); }
+          catch (err) { if (!err.userMessage) throw err; return send({ type: "error", message: err.userMessage, about: "rg" }); }
+          manager.leaveCurrent(key);
+          accountSockets.get(account)?.delete(send);
+          account = null;
+          return send({ type: "deleted" });
+        }
         case "purchases":
           if (!coins || !account) return;
           return send({ type: "purchases", list: await coins.purchases(account) });
@@ -281,9 +324,16 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
           if (!coins || !escrow || !account) return;
           const pack = coins.packs[msg.pack];
           if (!pack) return;
-          if (!(await coins.mayBuy(account, msg.pack))) return send({ type: "error", message: "The welcome offer is for your first purchase only.", about: "store" });
+          if (!regionAllowed(country)) return send({ type: "error", message: "Coin packs aren't available where you are.", about: "store" });
+          const why = await coins.checkPurchase(account, msg.pack);
+          if (why) return send({ type: "error", message: why, about: "store" });
           const d = await deposit(msg);
           if (!d) return;
+          if (isSanctioned(d.payer)) {
+            // shortcut: payment from a listed wallet is kept unspent and logged for a person (and legal advice) to handle
+            console.warn("SANCTIONS: payment from a listed wallet", JSON.stringify({ account, payer: d.payer, signature: msg.deposit.signature }));
+            return send({ type: "error", message: "We can't accept a payment from that wallet. Contact us.", about: "store" });
+          }
           if (d.lamports < packLamports(pack)) return send({ type: "error", message: "That payment doesn't cover the pack.", about: "store" });
           try {
             const got = await coins.creditPack(account, msg.pack, msg.deposit.signature);
@@ -297,7 +347,9 @@ function createServer(gameOpts = {}, limits = {}, escrow = null, coins = null) {
           let lamports = null;
           if (msg.pack !== undefined) {
             const pack = account && coins && coins.packs[msg.pack];
-            if (pack && !(await coins.mayBuy(account, msg.pack))) return send({ type: "error", message: "The welcome offer is for your first purchase only.", about: "intent" });
+            if (pack && !regionAllowed(country)) return send({ type: "error", message: "Coin packs aren't available where you are.", about: "intent" });
+            const why = pack && await coins.checkPurchase(account, msg.pack);
+            if (why) return send({ type: "error", message: why, about: "intent" });
             lamports = pack ? packLamports(pack) : null;
           }
           else if (msg.room) lamports = entry && entry.room.escrowed && entry.room.currency === "SOL" ? entry.room.units : null;
