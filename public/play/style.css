@@ -368,7 +368,7 @@ dialog[open] { animation: zoom .2s ease-out; }
 
 /* ---------- Phones ---------- */
 @media (max-width: 520px) {
-  header { padding: 12px 16px; flex-wrap: nowrap; }
+  header { padding: 12px calc(16px + env(safe-area-inset-right)) 12px calc(16px + env(safe-area-inset-left)); padding-top: calc(12px + env(safe-area-inset-top)); flex-wrap: nowrap; }
   h1 { font-size: 1.2rem; }
   .head-actions { gap: 6px; min-width: 0; }
   .icon-btn { width: 36px; height: 36px; }
@@ -397,10 +397,11 @@ dialog[open] { animation: zoom .2s ease-out; }
 }
 
 /* ---------- Installed on a phone's home screen: keep clear of the notch and home bar ---------- */
+/* Always applied: iOS doesn't always report standalone mode, and the insets are 0 where there's no notch */
+header { padding-top: calc(16px + env(safe-area-inset-top)); }
+.site-footer, main { padding-bottom: calc(32px + env(safe-area-inset-bottom)); }
+.toast { bottom: calc(24px + env(safe-area-inset-bottom)); }
 @media (display-mode: standalone) {
-  header { padding-top: calc(12px + env(safe-area-inset-top)); padding-left: calc(16px + env(safe-area-inset-left)); padding-right: calc(16px + env(safe-area-inset-right)); }
-  .site-footer, main { padding-bottom: calc(32px + env(safe-area-inset-bottom)); }
-  .toast { bottom: calc(24px + env(safe-area-inset-bottom)); }
   body { overscroll-behavior-y: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
   input { -webkit-user-select: text; user-select: text; }
 }
