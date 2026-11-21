@@ -620,6 +620,14 @@ function renderRoom() {
       el("span", { className: "pname" }, "Waiting…")));
   }
   $("playerList").replaceChildren(...rows);
+  // On a computer the room shows everyone's full player card (the list above is for phones and screen readers)
+  $("playerCards").replaceChildren(...r.players.map(p => el("li", { className: p.connected ? "" : "away" },
+    cardFor(p, "small"),
+    el("span", { className: "pc-tags" },
+      p.id === r.you ? el("span", { className: "tag" }, "You") : null,
+      p.isHost && !h2h ? el("span", { className: "tag host" }, "Host") : null,
+      !p.connected ? el("span", { className: "tag" }, "Reconnecting…") : null))),
+    ...Array.from({ length: Math.max(0, (h2h ? 2 : 4) - r.players.length) }, () => el("li", { className: "seat" }, el("span", {}, "Open seat"))));
   $("playerList").classList.toggle("versus", h2h);
 
   const enough = r.players.length >= 2;
@@ -1225,6 +1233,7 @@ function renderCoins() {
     : ["Sign in"]));
   if ($("accountDialog").open) renderAccount();
   if (app.screen === "store") renderStore();
+  renderHomeCard();
 }
 
 function renderAccount() {
@@ -1429,6 +1438,25 @@ function cardFor(p, extra = "") {
     el("span", { className: "pc-face", ariaHidden: "true" }, (p.name[0] || "?").toUpperCase()),
     el("span", { className: "pc-name" }, p.name),
     el("span", { className: "pc-stats" }, stat("ACC", st.acc), stat("SPD", st.spd), stat("WIN", st.win), stat("MP", st.mp)));
+}
+
+/* Home screen side panel on a computer: your card and coins, or an invitation to sign in */
+function renderHomeCard() {
+  const box = $("homeCard"), a = app.account;
+  if (!app.coins) return box.replaceChildren();
+  if (!a) return box.replaceChildren(
+    cardFor({ name: "You", look: {} }),
+    el("div", {}, el("h3", { className: "list-title" }, "Get your player card"),
+      el("p", { className: "hint" }, "Sign up for 10,000 Gold Coins and 1 Sweeps Coin. Your card's rating grows with every match."),
+      el("button", { className: "btn solid", type: "button", onclick: openAccount }, "Sign up free")));
+  box.replaceChildren(
+    cardFor({ name: a.username, look: a.look }),
+    el("div", {},
+      el("h3", { className: "list-title" }, a.username),
+      el("p", { className: "home-bal" }, el("strong", {}, coinText("GC", a.GC)), el("strong", {}, coinText("SC", a.SC))),
+      el("div", { className: "home-actions" },
+        a.dailyReady && !a.pausedUntil ? el("button", { className: "btn solid small", type: "button", onclick: () => send({ type: "claimDaily" }) }, "Claim free coins") : null,
+        el("button", { className: "btn small", type: "button", onclick: openStore }, "Store"))));
 }
 
 /* ----- celebrations: take over the screen when someone wins (everyone in the room sees the winner's) ----- */

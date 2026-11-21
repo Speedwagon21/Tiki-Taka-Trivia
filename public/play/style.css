@@ -537,3 +537,55 @@ header { padding-top: calc(16px + env(safe-area-inset-top)); }
   .pcard, .pmini, .pcard::after, .name-anim-gold, .name-anim-fire, .winner-cards .pcard { animation: none !important; }
   .cel-head { animation: fade-out .6s ease-in 3.4s forwards; }
 }
+
+/* ---------- Computers: use the width. Phones keep the single column above. ---------- */
+.home-card, .player-cards, .board-title { display: none; }
+@media (min-width: 1024px) {
+  main { max-width: 1140px; padding-top: 40px; }
+  .site-footer { max-width: 1140px; }
+  .panel { padding: 36px 40px; }
+  .terms, #search { max-width: 720px; margin: 0 auto; }
+
+  /* Home: make a game on the left; your card and joining with a code on the right */
+  #home.active { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); column-gap: 48px; align-items: start; }
+  #home > :not(.home-side) { grid-column: 1; }
+  .home-side { grid-column: 2; grid-row: 1 / span 8; display: grid; gap: 24px; }
+  .home-card { display: grid; grid-template-columns: auto 1fr; gap: 20px; align-items: center; padding: 22px; border: 1px solid var(--line); border-radius: 16px; background: var(--night); }
+  .home-card:empty { display: none; }
+  .home-card .list-title { margin-bottom: 6px; }
+  .home-bal { display: grid; gap: 2px; margin: 0 0 12px; font-family: var(--display); font-size: 1.15rem; }
+  .home-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .home-side .join-box { margin-top: 0; padding-top: 0; border-top: 0; }
+
+  /* Room: invite and stake on the left; everyone's player card on the right */
+  #room.active { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); column-gap: 48px; align-items: start; }
+  #room > :not(.room-players) { grid-column: 1; }
+  .room-players { grid-column: 2; grid-row: 1 / span 9; }
+  #playerList { display: none; }
+  .player-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 16px; list-style: none; padding: 0; }
+  .player-cards li { display: grid; justify-items: center; gap: 8px; }
+  .player-cards li.away { opacity: .5; }
+  .player-cards .seat { width: 120px; aspect-ratio: 5 / 7; border: 1px dashed var(--line); border-radius: 14px; display: grid; place-items: center; color: var(--muted); font-size: .85rem; }
+  .pc-tags { display: flex; gap: 6px; min-height: 22px; }
+
+  /* Match: the question in the middle, a live leaderboard down the right */
+  #arena.active { display: grid; grid-template-columns: minmax(0, 1fr) 260px; column-gap: 40px; }
+  #arena > :not(.arena-side):not(.countdown) { grid-column: 1; }
+  .arena-side { grid-column: 2; grid-row: 1 / span 8; border-left: 1px solid var(--line); padding-left: 28px; }
+  .board-title { display: block; }
+  .arena-side .chips { flex-direction: column; flex-wrap: nowrap; align-items: stretch; margin-top: 0; }
+  .arena-side .chip { border-radius: 12px; padding: 10px 14px; }
+  .arena-side .cname { max-width: none; flex: 1; }
+  #arena .q { font-size: 2rem; }
+
+  /* Results: the winner's card on the left, standings on the right */
+  #results.active { display: grid; grid-template-columns: 300px minmax(0, 1fr); column-gap: 48px; align-items: start; }
+  #results > :not(.winner-cards):not(.confetti) { grid-column: 2; }
+  .winner-cards { grid-column: 1; grid-row: 1 / span 9; flex-direction: column; align-items: center; margin: 0; }
+  .winner-cards:empty { display: none; }
+  #results.active:has(.winner-cards:empty) { grid-template-columns: minmax(0, 1fr); }
+  #results.active:has(.winner-cards:empty) > * { grid-column: 1; }
+
+  /* Store: more per row */
+  .item-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+}
